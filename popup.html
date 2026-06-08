@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TernKonnect AI</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 300px;
+      padding: 20px;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #0f0f1a;
+      color: #e0e0e0;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .logo {
+      width: 40px;
+      height: 40px;
+      background: radial-gradient(circle, #00ff88 0%, #00cc6a 100%);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      font-weight: bold;
+      color: #0f0f1a;
+      flex-shrink: 0;
+    }
+
+    .title { font-size: 16px; font-weight: 600; }
+    .subtitle { font-size: 11px; color: #888; margin-top: 2px; }
+
+    .card {
+      background: #1a1a2e;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .row:last-child { margin-bottom: 0; }
+
+    .label { font-size: 12px; color: #aaa; }
+
+    .badge {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-weight: 600;
+    }
+    .badge.green  { background: #003322; color: #00ff88; }
+    .badge.red    { background: #2e0000; color: #ff6666; }
+    .badge.yellow { background: #2e2200; color: #ffcc00; }
+
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .dot.green  { background: #00ff88; box-shadow: 0 0 6px #00ff88; animation: pulse 1.5s infinite; }
+    .dot.red    { background: #ff6666; }
+    .dot.yellow { background: #ffcc00; animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .info-text {
+      font-size: 11px;
+      color: #666;
+      text-align: center;
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+
+    .warning {
+      background: #2e1a00;
+      border: 1px solid #ff9900;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 11px;
+      color: #ffbb55;
+      line-height: 1.5;
+      margin-bottom: 10px;
+    }
+    .warning strong { color: #ffcc00; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">T</div>
+    <div>
+      <div class="title">TernKonnect AI</div>
+      <div class="subtitle">Voice Assistant for Blind Users</div>
+    </div>
+  </div>
+
+  <div id="apiWarning" class="warning" style="display:none">
+    <strong>API Key Required</strong><br>
+    Open <code>config.js</code> and add your Gemini API key, then reload the extension.
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="label">AI Connection</span>
+      <span class="badge" id="connBadge">Checking…</span>
+    </div>
+    <div class="row">
+      <span class="label">Microphone</span>
+      <span class="badge" id="micBadge">Checking…</span>
+    </div>
+    <div class="row">
+      <span class="label">Listening</span>
+      <span id="listenStatus"><span class="dot yellow"></span><span style="font-size:12px">Always on</span></span>
+    </div>
+  </div>
+
+  <p class="info-text">The assistant is always listening.<br>Just speak your command.</p>
+
+  <script src="popup.js"></script>
+</body>
+</html>

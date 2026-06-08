@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<!--
+  Open this file in Chrome once to auto-generate and download the 4 extension icons.
+  After downloading, move them into the icons/ folder inside new_chrome_extension/.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Generate TernKonnect Icons</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 30px; background: #0f0f1a; color: #eee; }
+    h2 { color: #00ff88; }
+    p  { color: #aaa; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h2>TernKonnect Icon Generator</h2>
+  <p>Icons are being generated and downloaded automatically…</p>
+  <canvas id="c" style="display:none"></canvas>
+
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    function drawIcon(size) {
+      canvas.width = size;
+      canvas.height = size;
+
+      // Dark background
+      ctx.fillStyle = '#0f0f1a';
+      ctx.beginPath();
+      ctx.roundRect(0, 0, size, size, size * 0.2);
+      ctx.fill();
+
+      // Outer glow ring
+      const gradient = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size * 0.45);
+      gradient.addColorStop(0, '#00ff88');
+      gradient.addColorStop(1, '#009944');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(size/2, size/2, size * 0.42, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Inner circle
+      ctx.fillStyle = '#0f0f1a';
+      ctx.beginPath();
+      ctx.arc(size/2, size/2, size * 0.28, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Letter "T" (TernKonnect)
+      ctx.fillStyle = '#00ff88';
+      ctx.font = `bold ${Math.round(size * 0.38)}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('T', size / 2, size / 2 + size * 0.02);
+    }
+
+    function download(size) {
+      drawIcon(size);
+      const link = document.createElement('a');
+      link.download = `icon${size}.png`;
+      link.href = canvas.toDataURL('image/png');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    // Small delay between downloads so the browser doesn't block them
+    [16, 32, 48, 128].forEach((size, i) => {
+      setTimeout(() => download(size), i * 300);
+    });
+  </script>
+</body>
+</html>
