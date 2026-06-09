@@ -7,7 +7,7 @@
 
 // Hardcoded fallback key (used if chrome.storage.local has no key saved).
 // Replace with your own key, or save one via the popup settings.
-const GEMINI_API_KEY_FALLBACK = 'AIzaSyDJmHzXh4rAL7yfCHluBacOx8J4WO8o5Aw';
+const GEMINI_API_KEY_FALLBACK = '';
 
 /**
  * Retrieve the Gemini API key.
