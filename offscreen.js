@@ -78,6 +78,8 @@ RULES:
 START: When this session begins, immediately greet the user with:
 "Welcome to TernKonnect AI assistant. I can help you navigate courses, play videos, take quizzes, and browse the web. Just tell me what you need."`;
 
+// NOTE: Gemini Live API uses lowercase JSON Schema types (object/string/number)
+// NOT the uppercase variants used by the REST API (OBJECT/STRING/NUMBER)
 const TOOLS = [
   {
     functionDeclarations: [
@@ -85,9 +87,9 @@ const TOOLS = [
         name: 'navigate_to_url',
         description: 'Navigate the browser to a URL or website.',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
-            url: { type: 'STRING', description: 'Full URL or domain, e.g. https://coursera.org or coursera.com' }
+            url: { type: 'string', description: 'Full URL or domain, e.g. https://coursera.org or coursera.com' }
           },
           required: ['url']
         }
@@ -96,11 +98,11 @@ const TOOLS = [
         name: 'click_element',
         description: 'Click a button, link, or interactive element by its visible text.',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
-            element_text: { type: 'STRING', description: 'Visible text of the element to click' },
+            element_text: { type: 'string', description: 'Visible text of the element to click' },
             element_type: {
-              type: 'STRING',
+              type: 'string',
               description: 'Type of element',
               enum: ['button', 'link', 'any']
             }
@@ -112,10 +114,10 @@ const TOOLS = [
         name: 'fill_form_field',
         description: 'Type a value into a form field (email, password, username, search box, etc.).',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
-            field_identifier: { type: 'STRING', description: 'Label, placeholder, or name of the field' },
-            value: { type: 'STRING', description: 'Value to type into the field' }
+            field_identifier: { type: 'string', description: 'Label, placeholder, or name of the field' },
+            value: { type: 'string', description: 'Value to type into the field' }
           },
           required: ['field_identifier', 'value']
         }
@@ -124,9 +126,9 @@ const TOOLS = [
         name: 'clear_field',
         description: 'Clear the contents of a form field.',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
-            field_identifier: { type: 'STRING', description: 'Label, placeholder, or name of the field to clear' }
+            field_identifier: { type: 'string', description: 'Label, placeholder, or name of the field to clear' }
           },
           required: ['field_identifier']
         }
@@ -135,10 +137,10 @@ const TOOLS = [
         name: 'read_page_content',
         description: 'Read the main text content of the current page.',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
             section: {
-              type: 'STRING',
+              type: 'string',
               description: 'What to read: "main" for all content, "headings" for just headings',
               enum: ['main', 'headings']
             }
@@ -148,25 +150,25 @@ const TOOLS = [
       {
         name: 'get_page_elements',
         description: 'Get all interactive elements on the page: buttons, links, form fields, headings.',
-        parameters: { type: 'OBJECT', properties: {} }
+        parameters: { type: 'object', properties: {} }
       },
       {
         name: 'get_current_page_info',
         description: 'Get the URL, title, and headings of the current page.',
-        parameters: { type: 'OBJECT', properties: {} }
+        parameters: { type: 'object', properties: {} }
       },
       {
         name: 'scroll_page',
         description: 'Scroll the current page.',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
             direction: {
-              type: 'STRING',
+              type: 'string',
               description: 'Direction to scroll',
               enum: ['up', 'down', 'top', 'bottom']
             },
-            amount: { type: 'NUMBER', description: 'Pixels to scroll (optional, default 500)' }
+            amount: { type: 'number', description: 'Pixels to scroll (optional, default 500)' }
           },
           required: ['direction']
         }
@@ -174,25 +176,25 @@ const TOOLS = [
       {
         name: 'submit_form',
         description: 'Submit the current form on the page.',
-        parameters: { type: 'OBJECT', properties: {} }
+        parameters: { type: 'object', properties: {} }
       },
       {
         name: 'go_back',
         description: 'Go back to the previous page.',
-        parameters: { type: 'OBJECT', properties: {} }
+        parameters: { type: 'object', properties: {} }
       },
       {
         name: 'go_forward',
         description: 'Go forward in browser history.',
-        parameters: { type: 'OBJECT', properties: {} }
+        parameters: { type: 'object', properties: {} }
       },
       {
         name: 'open_new_tab',
         description: 'Open a URL in a new browser tab.',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
-            url: { type: 'STRING', description: 'URL to open in new tab' }
+            url: { type: 'string', description: 'URL to open in new tab' }
           },
           required: ['url']
         }
@@ -201,9 +203,9 @@ const TOOLS = [
         name: 'press_key',
         description: 'Press a keyboard key on the currently focused element.',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
-            key: { type: 'STRING', description: 'Key name, e.g. Enter, Tab, Escape, ArrowDown' }
+            key: { type: 'string', description: 'Key name, e.g. Enter, Tab, Escape, ArrowDown' }
           },
           required: ['key']
         }
@@ -212,22 +214,22 @@ const TOOLS = [
       {
         name: 'take_screenshot',
         description: 'Capture a screenshot of the current visible browser tab. Returns an image that you can analyze to understand the visual layout, read text, identify elements, and describe the screen to the user. Use this when DOM-based tools fail, or when the user asks what the screen looks like.',
-        parameters: { type: 'OBJECT', properties: {} }
+        parameters: { type: 'object', properties: {} }
       },
       // ── Video control tool ──
       {
         name: 'control_video',
         description: 'Control the HTML5 video player on the current page. Use for playing, pausing, skipping, rewinding, changing speed, muting, or getting status of a video lecture.',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
             action: {
-              type: 'STRING',
+              type: 'string',
               description: 'What to do with the video',
               enum: ['play', 'pause', 'toggle', 'forward', 'rewind', 'speed', 'mute', 'status']
             },
             value: {
-              type: 'NUMBER',
+              type: 'number',
               description: 'Optional value: seconds to skip for forward/rewind, or playback rate for speed (e.g. 1.5, 2.0)'
             }
           },
@@ -238,15 +240,15 @@ const TOOLS = [
       {
         name: 'get_lms_outline',
         description: 'Get the list of course items (lessons, videos, quizzes, readings) from the current LMS page sidebar or syllabus. Works with Coursera, edX, Moodle, Canvas, Udemy.',
-        parameters: { type: 'OBJECT', properties: {} }
+        parameters: { type: 'object', properties: {} }
       },
       {
         name: 'click_lms_item',
         description: 'Navigate to a specific course item from the outline by its index number.',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
-            index: { type: 'NUMBER', description: 'The index number of the item to navigate to (from get_lms_outline results)' }
+            index: { type: 'number', description: 'The index number of the item to navigate to (from get_lms_outline results)' }
           },
           required: ['index']
         }
@@ -255,16 +257,16 @@ const TOOLS = [
       {
         name: 'get_quiz_details',
         description: 'Extract all quiz questions, answer options, and current selections from the page. Use this on quiz/assessment pages.',
-        parameters: { type: 'OBJECT', properties: {} }
+        parameters: { type: 'object', properties: {} }
       },
       {
         name: 'answer_quiz',
         description: 'Select an answer option for a specific quiz question.',
         parameters: {
-          type: 'OBJECT',
+          type: 'object',
           properties: {
-            question_index: { type: 'NUMBER', description: 'The index of the question (from get_quiz_details)' },
-            option_index: { type: 'NUMBER', description: 'The index of the option to select for that question' }
+            question_index: { type: 'number', description: 'The index of the question (from get_quiz_details)' },
+            option_index: { type: 'number', description: 'The index of the option to select for that question' }
           },
           required: ['question_index', 'option_index']
         }
@@ -471,7 +473,8 @@ function connectToGemini() {
     isConnecting = false;
     console.log('[TernKonnect] Connected to Gemini');
 
-    // Send setup
+    // Send setup — all three fields are valid at the top level of setup.
+    // Tools use lowercase JSON Schema types (object/string/number) as required by the Live API.
     ws.send(JSON.stringify({
       setup: {
         model: GEMINI_MODEL,
