@@ -1,8 +1,40 @@
 // ============================================================
 //  TernKonnect AI Assistant - Configuration
-//  Replace the value below with your actual Gemini API key.
-//  Get one free at: https://aistudio.google.com/app/apikey
+//  The API key is managed via the extension popup settings panel.
+//  It is stored in chrome.storage.local for persistence.
+//  A hardcoded fallback can be placed below for development.
 // ============================================================
 
-// export const GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY_HERE';
-export const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+// Hardcoded fallback key (used if chrome.storage.local has no key saved).
+// Replace with your own key, or save one via the popup settings.
+const GEMINI_API_KEY_FALLBACK = 'AIzaSyDJmHzXh4rAL7yfCHluBacOx8J4WO8o5Aw';
+
+/**
+ * Retrieve the Gemini API key.
+ * Priority: chrome.storage.local → hardcoded fallback.
+ * @returns {Promise<string|null>}
+ */
+export async function getGeminiApiKey() {
+  try {
+    const result = await chrome.storage.local.get('geminiApiKey');
+    if (result.geminiApiKey) return result.geminiApiKey;
+  } catch (_) {
+    // storage unavailable — fall through
+  }
+  return GEMINI_API_KEY_FALLBACK || null;
+}
+
+/**
+ * Save a new API key to chrome.storage.local.
+ * @param {string} key
+ */
+export async function saveGeminiApiKey(key) {
+  await chrome.storage.local.set({ geminiApiKey: key });
+}
+
+/**
+ * Clear the saved API key from chrome.storage.local.
+ */
+export async function clearGeminiApiKey() {
+  await chrome.storage.local.remove('geminiApiKey');
+}
