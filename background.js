@@ -115,6 +115,7 @@ async function executeTool(name, args) {
     // ── LMS & Computer-Vision tools ──
     case 'take_screenshot':      return takeScreenshot();
     case 'control_video':        return controlVideo(args.action, args.value);
+    case 'get_video_transcript': return getVideoTranscript();
     case 'get_lms_outline':      return getLmsOutline();
     case 'click_lms_item':       return clickLmsItem(args.index);
     case 'get_quiz_details':     return getQuizDetails();
@@ -467,51 +468,143 @@ async function takeScreenshot() {
 // ── Video control ──────────────────────────────────────────────────────────────
 
 async function controlVideo(action, value) {
-  return runInTab((act, val) => {
-    const video = document.querySelector('video');
-    if (!video) return { success: false, message: 'No video element found on this page.' };
+  const tab = await getActiveTab();
+  if (!tab) return { success: false, message: 'No active tab' };
 
-    switch (act) {
-      case 'play':
-        video.play();
-        return { success: true, action: 'play' };
-      case 'pause':
-        video.pause();
-        return { success: true, action: 'pause' };
-      case 'toggle':
-        if (video.paused) { video.play(); return { success: true, action: 'resumed' }; }
-        else { video.pause(); return { success: true, action: 'paused' }; }
-      case 'forward':
-        video.currentTime = Math.min(video.duration, video.currentTime + (val || 10));
-        return { success: true, action: 'forward', seconds: val || 10 };
-      case 'rewind':
-        video.currentTime = Math.max(0, video.currentTime - (val || 10));
-        return { success: true, action: 'rewind', seconds: val || 10 };
-      case 'speed':
-        video.playbackRate = val || 1;
-        return { success: true, action: 'speed', rate: val || 1 };
-      case 'mute':
-        video.muted = !video.muted;
-        return { success: true, action: video.muted ? 'muted' : 'unmuted' };
-      case 'status': {
-        const mins = Math.floor(video.currentTime / 60);
-        const secs = Math.floor(video.currentTime % 60);
-        const durMins = Math.floor(video.duration / 60);
-        const durSecs = Math.floor(video.duration % 60);
-        return {
-          success: true,
-          paused: video.paused,
-          currentTime: `${mins}:${secs.toString().padStart(2, '0')}`,
-          duration: `${durMins}:${durSecs.toString().padStart(2, '0')}`,
-          playbackRate: video.playbackRate,
-          muted: video.muted,
-          volume: Math.round(video.volume * 100) + '%'
-        };
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id, allFrames: true },
+    func: (act, val) => {
+      let video = document.querySelector('video');
+      
+      // If no video but trying to play, try clicking overlay play buttons (Udemy, Video.js, etc.)
+      if (!video && act === 'play') {
+        const btn = document.querySelector('[data-purpose="video-play-button"], .vjs-big-play-button, button[aria-label="Play"], .play-button');
+        if (btn) {
+          btn.click();
+          return { success: true, action: 'play', note: 'Clicked play button overlay' };
+        }
       }
-      default:
-        return { success: false, message: `Unknown video action: ${act}` };
+
+      if (!video) return null; // Skip this frame
+
+      try {
+        switch (act) {
+          case 'play':
+            video.play();
+            return { success: true, action: 'play' };
+          case 'pause':
+            video.pause();
+            return { success: true, action: 'pause' };
+          case 'toggle':
+            if (video.paused) { video.play(); return { success: true, action: 'resumed' }; }
+            else { video.pause(); return { success: true, action: 'paused' }; }
+          case 'forward':
+            video.currentTime = Math.min(video.duration, video.currentTime + (val || 10));
+            return { success: true, action: 'forward', seconds: val || 10 };
+          case 'rewind':
+            video.currentTime = Math.max(0, video.currentTime - (val || 10));
+            return { success: true, action: 'rewind', seconds: val || 10 };
+          case 'speed':
+            video.playbackRate = val || 1;
+            return { success: true, action: 'speed', rate: val || 1 };
+          case 'mute':
+            video.muted = !video.muted;
+            return { success: true, action: video.muted ? 'muted' : 'unmuted' };
+          case 'status': {
+            const mins = Math.floor(video.currentTime / 60);
+            const secs = Math.floor(video.currentTime % 60);
+            const durMins = Math.floor(video.duration / 60);
+            const durSecs = Math.floor(video.duration % 60);
+            return {
+              success: true,
+              paused: video.paused,
+              currentTime: `${mins}:${secs.toString().padStart(2, '0')}`,
+              duration: `${durMins}:${durSecs.toString().padStart(2, '0')}`,
+              playbackRate: video.playbackRate,
+              muted: video.muted,
+              volume: Math.round(video.volume * 100) + '%'
+            };
+          }
+          default:
+            return { success: false, message: `Unknown video action: ${act}` };
+        }
+      } catch (err) {
+        return { success: false, message: err.message };
+      }
+    },
+    args: [action, value]
+  });
+
+  // Find the first frame that successfully found a video (or clicked a button)
+  for (const res of results) {
+    if (res.result) return res.result;
+  }
+
+  return { success: false, message: 'No video element found on this page or inside iframes.' };
+}
+
+// ── LMS: Video Transcript ──────────────────────────────────────────────────────
+
+async function getVideoTranscript() {
+  return runInTab(() => {
+    // Selectors for common transcript containers
+    const selectors = [
+      '.rc-Transcript',                 // Coursera
+      '[data-purpose="transcript-panel"]', // Udemy
+      '.transcript-text',               // Generic
+      '.video-transcript',
+      '.wrapper-transcripts',           // edX
+      '#transcript',
+      '[aria-label="Transcript"]'
+    ];
+
+    let transcriptEl = null;
+    for (const sel of selectors) {
+      transcriptEl = document.querySelector(sel);
+      if (transcriptEl) break;
     }
-  }, [action, value]);
+
+    if (!transcriptEl) {
+      // Fallback: search for elements that look like subtitles or captions
+      const trackEls = Array.from(document.querySelectorAll('.vjs-text-track-display, .captions-text, [class*="caption"], [class*="subtitle"]'));
+      if (trackEls.length > 0) {
+        const text = trackEls.map(el => el.textContent.trim()).filter(Boolean).join(' ');
+        if (text.length > 10) return { success: true, text: text.slice(0, 5000), note: 'Extracted from on-screen captions (may be incomplete).' };
+      }
+      return { success: false, message: 'No transcript or closed captions found on the page. Try looking for a "Show Transcript" button.' };
+    }
+
+    // Extract text from the transcript container
+    const lines = Array.from(transcriptEl.querySelectorAll('p, span, li, div'))
+      .map(el => {
+        // Only get text nodes directly inside the element to avoid duplication
+        let text = '';
+        for (let node of el.childNodes) {
+          if (node.nodeType === Node.TEXT_NODE) text += node.nodeValue + ' ';
+        }
+        return text.trim();
+      })
+      .filter(text => text.length > 5);
+
+    // Deduplicate consecutive identical lines (sometimes structure causes duplicates)
+    const uniqueLines = [];
+    for (const line of lines) {
+      if (uniqueLines.length === 0 || uniqueLines[uniqueLines.length - 1] !== line) {
+        uniqueLines.push(line);
+      }
+    }
+
+    const fullText = uniqueLines.join(' ');
+    if (!fullText || fullText.length < 10) {
+      return { success: false, message: 'Transcript container found, but it is empty. It might be loading or hidden.' };
+    }
+
+    return { 
+      success: true, 
+      text: fullText.slice(0, 10000), // Cap at 10,000 characters to avoid breaking payload limits
+      length: fullText.length 
+    };
+  });
 }
 
 // ── LMS: Course outline / syllabus ─────────────────────────────────────────────

@@ -43,8 +43,9 @@ NAVIGATION & PAGE INTERACTION:
 VISION (COMPUTER USE):
 - take_screenshot: capture the visible screen as an image. Use this when you need to SEE the page visually — for example to understand a layout, read content that DOM tools missed, identify visual elements, or when the user asks "what's on the screen?" or "describe the page". After receiving the screenshot, you WILL be able to see the image and must describe what you see to the user.
 
-VIDEO PLAYER CONTROL:
+VIDEO CONTROL:
 - control_video: control the HTML5 video on the current page. Actions: play, pause, toggle, forward (skip ahead), rewind (go back), speed (change playback speed), mute, status (get current video info like time, duration, speed).
+- get_video_transcript: extract and read the text transcript or closed captions for the video lecture currently on the screen. Use this when the user asks to read the transcript.
 
 LMS / COURSE NAVIGATION:
 - get_lms_outline: get the list of lessons, modules, quizzes, and items in the current course syllabus/outline. Works with Coursera, edX, Moodle, Canvas, Udemy, and similar platforms.
@@ -239,6 +240,11 @@ const TOOLS = [
           },
           required: ['action']
         }
+      },
+      {
+        name: 'get_video_transcript',
+        description: 'Extract and return the text transcript or closed captions for the video lecture currently on the screen. Use this when the user asks to read the transcript.',
+        parameters: { type: 'object', properties: {} }
       },
       // ── LMS navigation tools ──
       {
