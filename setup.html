@@ -5,13 +5,13 @@
   <title>TernKonnect - Microphone Setup</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Outfit', sans-serif;
-      background: linear-gradient(165deg, #080710 0%, #0d0b1e 40%, #120e2e 100%);
-      color: #e0e0f0;
+      font-family: 'Inter', system-ui, sans-serif;
+      background: linear-gradient(165deg, #10111a 0%, #171922 100%);
+      color: #eff0f3;
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -50,28 +50,11 @@
       z-index: 10;
     }
     .logo-ring {
-      width: 72px;
-      height: 72px;
-      border-radius: 50%;
-      background: conic-gradient(from 0deg, #6366f1, #10b981, #6366f1);
-      padding: 3px;
-      margin: 0 auto 24px;
-      animation: logoSpin 6s linear infinite;
-    }
-    @keyframes logoSpin {
-      to { rotate: 360deg; }
-    }
-    .logo-inner {
-      width: 100%;
-      height: 100%;
-      border-radius: 50%;
-      background: #0d0b1e;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 32px;
-      font-weight: 700;
-      color: #a5b4fc;
+      margin: 0 auto 24px;
+      color: #6366f1; /* Primary color */
     }
     h1 {
       font-size: 24px;
@@ -92,7 +75,7 @@
       border: none;
       border-radius: 12px;
       cursor: pointer;
-      background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+      background: linear-gradient(135deg, hsl(239 84% 67%), hsl(263 70% 58%));
       color: white;
       box-shadow: 0 4px 12px rgba(99,102,241,0.3);
       transition: all 0.25s ease;
@@ -122,7 +105,10 @@
 
   <div class="card">
     <div class="logo-ring">
-      <div class="logo-inner">T</div>
+      <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-book-open">
+        <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+        <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+      </svg>
     </div>
     <h1>Enable Microphone Access</h1>
     <p id="instruction">TernKonnect needs permission to use your microphone so it can listen to your voice commands. Please click "Allow" on the permission prompt at the top of your screen.</p>
