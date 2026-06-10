@@ -16,8 +16,8 @@ const GEMINI_API_KEY_FALLBACK = '';
  */
 export async function getGeminiApiKey() {
   try {
-    const result = await chrome.storage.local.get('geminiApiKey');
-    if (result.geminiApiKey) return result.geminiApiKey;
+    const result = await chrome.runtime.sendMessage({ type: 'get_config' });
+    if (result && result.apiKey) return result.apiKey;
   } catch (_) {
     // storage unavailable — fall through
   }

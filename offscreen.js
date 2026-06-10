@@ -8,7 +8,7 @@ import { getGeminiApiKey } from './config.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
-const GEMINI_MODEL = 'models/gemini-3.1-flash-live-preview';
+const GEMINI_MODEL = 'models/gemini-2.0-flash-exp';
 const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 
 const SYSTEM_PROMPT = `You are TernKonnect, an AI browser assistant built exclusively for blind students.
@@ -74,6 +74,10 @@ RULES:
     - If on search results page: analyze the course options returned. Recommend the top course(s) and explain WHY (e.g. based on rating/difficulty/fit). Guide them on how to select it.
     - If on a course page: check if they need to enroll. If so, guide them and click the Enroll button to get them enrolled.
     - Once in a course: guide them step-by-step through the outline and syllabus.
+
+15. LINKEDIN POSTS:
+    - If the user asks to write a LinkedIn post, guide them. Navigate to linkedin.com, use click_element to click "Start a post", use fill_form_field to write the draft in the text editor, and then use click_element to click "Post" to publish it.
+    - If you are having trouble finding the buttons, use take_screenshot to see the screen and find the right elements.
 
 START: When this session begins, immediately greet the user with:
 "Welcome to TernKonnect AI assistant. I can help you navigate courses, play videos, take quizzes, and browse the web. Just tell me what you need."`;
@@ -281,9 +285,9 @@ let ws = null;
 let apiKey = null;
 let isConnecting = false;
 let reconnectTimer = null;
-let micStream = null;
-let audioContext = null;
-let scriptProcessor = null;
+let micStream;
+let audioContext;
+let workletNode;
 let hasWelcomed = false;
 
 // Audio playback queue (we queue chunks and play them sequentially)
@@ -293,14 +297,11 @@ let playbackCtx = null;
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
 
-// ── Boot ───────────────────────────────────────────────────────────────────────
-
 function stopMicrophone() {
   console.log('[TernKonnect] Stopping microphone capture and cleaning up...');
-  if (scriptProcessor) {
-    try { scriptProcessor.disconnect(); } catch (_) {}
-    scriptProcessor.onaudioprocess = null;
-    scriptProcessor = null;
+  if (workletNode) {
+    try { workletNode.disconnect(); } catch (_) {}
+    workletNode = null;
   }
   if (audioContext) {
     try { audioContext.close(); } catch (_) {}
@@ -314,9 +315,15 @@ function stopMicrophone() {
   }
 }
 
-(async function boot() {
+async function boot() {
   // Always clean up any existing capture resources first
   stopMicrophone();
+
+  // Load session state to avoid repeating welcome message on unexpected browser reloads
+  try {
+    const sessionData = await chrome.runtime.sendMessage({ type: 'get_session_state' });
+    hasWelcomed = !!sessionData.hasWelcomed;
+  } catch (_) {}
 
   // API key comes from chrome.storage.local (saved via popup) or hardcoded fallback
   apiKey = await getGeminiApiKey();
@@ -329,13 +336,17 @@ function stopMicrophone() {
 
   await startMicrophone();
   connectToGemini();
-})();
+}
+
+// Initial boot
+boot();
 
 // Listen for messages from popup or background service worker
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'reload_config') {
     console.log('[TernKonnect] Config reload requested — restarting connection...');
     hasWelcomed = false;
+    try { chrome.runtime.sendMessage({ type: 'set_session_state', state: { hasWelcomed: false } }); } catch (_) {}
     if (ws) { ws.close(); ws = null; }
     boot();
   } else if (message.type === 'page_loaded') {
@@ -382,6 +393,15 @@ function handlePageLoadedNotification(analysis) {
     } else {
       promptText += `Instruction: The user is on a lesson/lecture page. Announce the title of the lesson/item, and ask if they want to play the video, view the syllabus outline, or continue.`;
     }
+  } else if (analysis.isLinkedIn) {
+    promptText += `Platform: LinkedIn\nPage Type: ${analysis.pageType}\n`;
+    if (analysis.pageType === 'linkedin_feed') {
+      promptText += `Instruction: The user is on the LinkedIn feed. Ask them if they would like you to help them draft and publish a new post, or if they want to scroll through their feed.`;
+    } else if (analysis.pageType === 'linkedin_profile') {
+      promptText += `Instruction: The user is viewing a LinkedIn profile. Ask if they want you to read the profile summary or connect with them.`;
+    } else {
+      promptText += `Instruction: The user is on LinkedIn. Ask them what they would like to do (e.g. draft a post, search for connections).`;
+    }
   } else {
     promptText += `Instruction: The user is browsing a regular page. Briefly announce the title and ask what they would like to do next.`;
   }
@@ -415,7 +435,15 @@ async function startMicrophone() {
     audioContext = new AudioContext({ sampleRate: 16000 });
     console.log('[TernKonnect] AudioContext state on creation:', audioContext.state);
     
-    // Explicitly resume the context to guarantee that onaudioprocess fires
+    // Automatically resume if Chrome suspends it later
+    audioContext.onstatechange = () => {
+      console.log('[TernKonnect] AudioContext state changed:', audioContext.state);
+      if (audioContext.state === 'suspended') {
+        audioContext.resume().catch(e => console.error('[TernKonnect] Failed to resume AudioContext:', e));
+      }
+    };
+    
+    // Explicitly resume the context to guarantee that processing fires
     if (audioContext.state === 'suspended') {
       await audioContext.resume();
       console.log('[TernKonnect] AudioContext explicitly resumed. State:', audioContext.state);
@@ -537,6 +565,8 @@ async function handleServerMessage(msg) {
     console.log('[TernKonnect] Setup complete');
     if (!hasWelcomed) {
       hasWelcomed = true;
+      try { chrome.runtime.sendMessage({ type: 'set_session_state', state: { hasWelcomed: true } }); } catch (_) {}
+      
       // Nudge Gemini to say the welcome message
       ws.send(JSON.stringify({
         clientContent: {

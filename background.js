@@ -78,6 +78,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ alive: true });
     return true;
   }
+
+  if (message.type === 'get_config') {
+    chrome.storage.local.get('geminiApiKey').then(res => sendResponse({ apiKey: res.geminiApiKey })).catch(() => sendResponse({ apiKey: null }));
+    return true;
+  }
+
+  if (message.type === 'get_session_state') {
+    chrome.storage.session.get('hasWelcomed').then(res => sendResponse({ hasWelcomed: !!res.hasWelcomed })).catch(() => sendResponse({ hasWelcomed: false }));
+    return true;
+  }
+
+  if (message.type === 'set_session_state') {
+    chrome.storage.session.set(message.state).then(() => sendResponse({ success: true })).catch(() => sendResponse({ success: false }));
+    return true;
+  }
 });
 
 // ── Tool implementations ───────────────────────────────────────────────────────
@@ -801,7 +816,12 @@ function analyzePageContext() {
   else if (url.includes('canvas') || document.querySelector('.ic-app-header')) lmsPlatform = 'Canvas';
   else if (url.includes('moodle') || document.querySelector('.moodle-wrapper')) lmsPlatform = 'Moodle';
   
-  if (!lmsPlatform) {
+  let isLinkedIn = false;
+  if (url.includes('linkedin.com')) {
+    isLinkedIn = true;
+  }
+  
+  if (!lmsPlatform && !isLinkedIn) {
     return { url, title, isLMS: false };
   }
   
@@ -892,13 +912,22 @@ function analyzePageContext() {
     pageType = 'course_home';
     const enrollBtn = document.querySelector('button[class*="enroll"], a[href*="enroll"], .enroll-button, [data-testid="enroll-button"], [data-click-key*="enroll"]');
     contextInfo.hasEnrollButton = !!enrollBtn;
+  } else if (isLinkedIn) {
+    if (path.includes('/feed')) {
+      pageType = 'linkedin_feed';
+    } else if (path.includes('/in/')) {
+      pageType = 'linkedin_profile';
+    } else {
+      pageType = 'linkedin_other';
+    }
   }
   
   return {
     url,
     title,
-    isLMS: true,
+    isLMS: !!lmsPlatform,
     lmsPlatform,
+    isLinkedIn,
     pageType,
     contextInfo
   };

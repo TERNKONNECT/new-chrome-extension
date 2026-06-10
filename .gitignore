@@ -1,1 +1,4 @@
 .env
+node_modules/
+test_ws.js
+.DS_Store
