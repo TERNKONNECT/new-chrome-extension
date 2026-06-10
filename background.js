@@ -80,7 +80,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'get_config') {
-    chrome.storage.local.get('geminiApiKey').then(res => sendResponse({ apiKey: res.geminiApiKey })).catch(() => sendResponse({ apiKey: null }));
+    chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectPin']).then(res => {
+      sendResponse({ email: res.ternkonnectEmail, pin: res.ternkonnectPin });
+    }).catch(() => sendResponse({ email: null, pin: null }));
     return true;
   }
 

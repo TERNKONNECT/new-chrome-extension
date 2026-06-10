@@ -10,7 +10,8 @@ const radarLabel  = document.getElementById('radarLabel');
 
 const settingsToggle = document.getElementById('settingsToggle');
 const settingsPanel  = document.getElementById('settingsPanel');
-const apiKeyInput    = document.getElementById('apiKeyInput');
+const emailInput     = document.getElementById('emailInput');
+const pinInput       = document.getElementById('pinInput');
 const saveKeyBtn     = document.getElementById('saveKeyBtn');
 const clearKeyBtn    = document.getElementById('clearKeyBtn');
 const settingsMsg    = document.getElementById('settingsMsg');
@@ -21,61 +22,50 @@ settingsToggle.addEventListener('click', () => {
   const isOpen = settingsPanel.classList.toggle('open');
   settingsToggle.classList.toggle('active', isOpen);
 
-  // When opening, load the current saved key (masked)
-  if (isOpen) loadSavedKey();
+  // When opening, load the current saved auth
+  if (isOpen) loadSavedAuth();
 });
 
-async function loadSavedKey() {
+async function loadSavedAuth() {
   try {
-    const result = await chrome.storage.local.get('geminiApiKey');
-    if (result.geminiApiKey) {
-      // Show masked version
-      const key = result.geminiApiKey;
-      apiKeyInput.value = key.slice(0, 6) + '•'.repeat(Math.max(0, key.length - 10)) + key.slice(-4);
-      apiKeyInput.dataset.hasKey = 'true';
+    const result = await chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectPin']);
+    if (result.ternkonnectEmail && result.ternkonnectPin) {
+      emailInput.value = result.ternkonnectEmail;
+      pinInput.value = result.ternkonnectPin;
     } else {
-      apiKeyInput.value = '';
-      apiKeyInput.dataset.hasKey = 'false';
+      emailInput.value = '';
+      pinInput.value = '';
     }
   } catch (_) {}
 }
 
-// When user focuses the input, clear the masked display so they can type a new key
-apiKeyInput.addEventListener('focus', () => {
-  if (apiKeyInput.dataset.hasKey === 'true') {
-    apiKeyInput.value = '';
-    apiKeyInput.type = 'text';
-    apiKeyInput.dataset.hasKey = 'false';
-  }
-});
-
-apiKeyInput.addEventListener('blur', () => {
-  apiKeyInput.type = 'password';
-});
-
-// ── Save key ──────────────────────────────────────────────────
+// ── Save auth ──────────────────────────────────────────────────
 
 saveKeyBtn.addEventListener('click', async () => {
-  const key = apiKeyInput.value.trim();
+  const email = emailInput.value.trim();
+  const pin = pinInput.value.trim();
 
-  if (!key || key.includes('•')) {
-    showMsg('Enter a new API key first.', true);
+  if (!email || !pin) {
+    showMsg('Enter both Email and PIN.', true);
     return;
   }
 
-  if (!key.startsWith('AIza')) {
-    showMsg('Key should start with "AIza…". Double-check it.', true);
+  // Basic email validation
+  if (!email.includes('@')) {
+    showMsg('Please enter a valid email address.', true);
     return;
   }
 
   try {
-    await chrome.storage.local.set({ geminiApiKey: key });
-    showMsg('✓ Key saved! Reload extension to apply.', false);
-    apiKeyInput.dataset.hasKey = 'true';
-    apiKeyInput.type = 'password';
-    apiKeyInput.value = key.slice(0, 6) + '•'.repeat(Math.max(0, key.length - 10)) + key.slice(-4);
+    // Optionally call the backend here to verify the PIN before saving
+    // For now, we save it and the background worker will use it to authenticate
+    await chrome.storage.local.set({ 
+      ternkonnectEmail: email,
+      ternkonnectPin: pin
+    });
+    showMsg('✓ Credentials saved!', false);
 
-    // Attempt to tell the background to reload
+    // Attempt to tell the background to reload configs/re-authenticate
     try { chrome.runtime.sendMessage({ type: 'reload_config' }); } catch (_) {}
 
     // Recheck status after short delay
@@ -85,14 +75,15 @@ saveKeyBtn.addEventListener('click', async () => {
   }
 });
 
-// ── Clear key ─────────────────────────────────────────────────
+// ── Clear auth ─────────────────────────────────────────────────
 
 clearKeyBtn.addEventListener('click', async () => {
   try {
-    await chrome.storage.local.remove('geminiApiKey');
-    apiKeyInput.value = '';
-    apiKeyInput.dataset.hasKey = 'false';
-    showMsg('Key cleared.', false);
+    await chrome.storage.local.remove(['ternkonnectEmail', 'ternkonnectPin']);
+    emailInput.value = '';
+    pinInput.value = '';
+    showMsg('Credentials cleared.', false);
+    setTimeout(checkStatus, 1000);
   } catch (err) {
     showMsg('Failed to clear: ' + err.message, true);
   }
@@ -110,11 +101,11 @@ function showMsg(text, isError) {
 // ── Status check ──────────────────────────────────────────────
 
 async function checkStatus() {
-  // First check if API key exists
-  let hasKey = false;
+  // First check if Auth exists
+  let hasAuth = false;
   try {
-    const result = await chrome.storage.local.get('geminiApiKey');
-    hasKey = !!result.geminiApiKey;
+    const result = await chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectPin']);
+    hasAuth = !!(result.ternkonnectEmail && result.ternkonnectPin);
   } catch (_) {}
 
   // Ping the background service worker
@@ -151,10 +142,10 @@ async function checkStatus() {
       radarLabel.textContent = 'Mic Setup Needed';
       radarLabel.className = 'radar-label';
     }
-  } else if (!hasKey) {
-    // No key saved — show warning
+  } else if (!hasAuth) {
+    // No auth saved — show warning
     warn.style.display = 'flex';
-    setBadge(connBadge, 'No Key', 'red');
+    setBadge(connBadge, 'Not Authenticated', 'red');
     
     if (micState === 'granted') {
       setBadge(micBadge, 'Ready', 'green');
@@ -165,10 +156,10 @@ async function checkStatus() {
     }
     
     radarCore.className = 'radar-core error';
-    radarLabel.textContent = 'API Key Required';
+    radarLabel.textContent = 'Auth Required';
     radarLabel.className = 'radar-label error';
   } else {
-    // Key exists but background not responding yet
+    // Auth exists but background not responding yet
     warn.style.display = 'none';
     setBadge(connBadge, 'Starting…', 'yellow');
     

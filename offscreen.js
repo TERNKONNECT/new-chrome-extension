@@ -4,12 +4,12 @@
 // Tool calls from Gemini are forwarded to background.js for execution.
 // Screenshot results are sent back to Gemini as inline images for vision analysis.
 
-import { getGeminiApiKey } from './config.js';
+import { getTernkonnectAuth } from './config.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
 const GEMINI_MODEL = 'models/gemini-2.0-flash-exp';
-const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const GEMINI_WS_BASE = 'ws://localhost:9001/api/tools/proxy';
 
 const SYSTEM_PROMPT = `You are TernKonnect, an AI browser assistant built exclusively for blind students.
 The user is completely blind and CANNOT see the screen at all — you are their eyes, hands, and navigator.
@@ -288,7 +288,7 @@ const TOOLS = [
 // ── State ──────────────────────────────────────────────────────────────────────
 
 let ws = null;
-let apiKey = null;
+let authDetails = null;
 let isConnecting = false;
 let reconnectTimer = null;
 let micStream;
@@ -331,12 +331,12 @@ async function boot() {
     hasWelcomed = !!sessionData.hasWelcomed;
   } catch (_) {}
 
-  // API key comes from chrome.storage.local (saved via popup) or hardcoded fallback
-  apiKey = await getGeminiApiKey();
+  // API key comes from chrome.storage.local (saved via popup)  // 4) Load Auth
+  authDetails = await getTernkonnectAuth();
 
-  if (!apiKey || apiKey === 'YOUR_GEMINI_API_KEY_HERE') {
-    console.error('[TernKonnect] No API key found. Open the extension popup and add your Gemini API key in Settings.');
-    speakFallback('TernKonnect is not configured. Please open the extension popup and add your Gemini API key in the settings panel, then reload the extension.');
+  if (!authDetails || !authDetails.email || !authDetails.pin) {
+    console.warn('[TernKonnect] No auth configured. Please add Email and PIN in settings.');
+    // Keep mic running, but we won't connect to WS until configured.
     return;
   }
 
@@ -500,7 +500,7 @@ function connectToGemini() {
   if (isConnecting || (ws && ws.readyState === WebSocket.OPEN)) return;
   isConnecting = true;
 
-  const url = `${GEMINI_WS_BASE}?key=${apiKey}`;
+  const url = `${GEMINI_WS_BASE}?email=${encodeURIComponent(authDetails.email)}&pin=${encodeURIComponent(authDetails.pin)}`;
   ws = new WebSocket(url);
 
   ws.onopen = () => {

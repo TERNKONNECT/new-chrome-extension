@@ -411,22 +411,26 @@
       <button class="settings-btn" id="settingsToggle" title="Settings" aria-label="Open settings">⚙</button>
     </div>
 
-    <!-- ── API Key Warning (hidden by default) ── -->
+    <!-- ── Authentication Warning (hidden by default) ── -->
     <div id="apiWarning" class="warning" style="display:none">
       <span class="warn-icon">⚠</span>
-      <div><strong>API Key Required</strong><br>Open settings (⚙) above and enter your Gemini API key, then click Save.</div>
+      <div><strong>Authentication Required</strong><br>Open settings (⚙) above and enter your Email and Integration PIN, then click Save.</div>
     </div>
 
     <!-- ── Settings Panel (collapsible) ── -->
     <div class="settings-panel" id="settingsPanel">
       <div class="card">
         <div class="settings-inner">
-          <label for="apiKeyInput">Gemini API Key</label>
+          <label for="emailInput">Email</label>
           <div class="key-input-wrap">
-            <input type="password" id="apiKeyInput" class="key-input" placeholder="AIza..." autocomplete="off" />
+            <input type="email" id="emailInput" class="key-input" placeholder="user@example.com" autocomplete="off" />
+          </div>
+          <label for="pinInput">Integration PIN</label>
+          <div class="key-input-wrap">
+            <input type="password" id="pinInput" class="key-input" placeholder="6-digit PIN" autocomplete="off" />
           </div>
           <div class="btn-row">
-            <button class="btn btn-primary" id="saveKeyBtn">Save Key</button>
+            <button class="btn btn-primary" id="saveKeyBtn">Save</button>
             <button class="btn btn-ghost" id="clearKeyBtn">Clear</button>
           </div>
           <div class="settings-msg" id="settingsMsg"></div>
