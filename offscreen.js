@@ -291,9 +291,10 @@ let ws = null;
 let apiKey = null;
 let isConnecting = false;
 let reconnectTimer = null;
+let suppressNextReconnect = false;
 let micStream;
 let audioContext;
-let workletNode;
+let scriptProcessor;
 let hasWelcomed = false;
 
 // Audio playback queue (we queue chunks and play them sequentially)
@@ -305,9 +306,9 @@ let playbackCtx = null;
 
 function stopMicrophone() {
   console.log('[TernKonnect] Stopping microphone capture and cleaning up...');
-  if (workletNode) {
-    try { workletNode.disconnect(); } catch (_) {}
-    workletNode = null;
+  if (scriptProcessor) {
+    try { scriptProcessor.disconnect(); } catch (_) {}
+    scriptProcessor = null;
   }
   if (audioContext) {
     try { audioContext.close(); } catch (_) {}
@@ -322,6 +323,11 @@ function stopMicrophone() {
 }
 
 async function boot() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
   // Always clean up any existing capture resources first
   stopMicrophone();
 
@@ -349,11 +355,16 @@ boot();
 
 // Listen for messages from popup or background service worker
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === 'reload_config') {
+  if (message.type === 'restart_offscreen') {
     console.log('[TernKonnect] Config reload requested — restarting connection...');
     hasWelcomed = false;
     try { chrome.runtime.sendMessage({ type: 'set_session_state', state: { hasWelcomed: false } }); } catch (_) {}
-    if (ws) { ws.close(); ws = null; }
+    if (ws) {
+      suppressNextReconnect = true;
+      ws.close();
+      ws = null;
+    }
+    isConnecting = false;
     boot();
   } else if (message.type === 'page_loaded') {
     handlePageLoadedNotification(message.analysis);
@@ -546,6 +557,10 @@ function connectToGemini() {
     console.warn('[TernKonnect] WebSocket closed:', event.code, event.reason);
     isConnecting = false;
     ws = null;
+    if (suppressNextReconnect) {
+      suppressNextReconnect = false;
+      return;
+    }
     scheduleReconnect();
   };
 

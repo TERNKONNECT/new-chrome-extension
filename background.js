@@ -34,6 +34,11 @@ async function keepAlive() {
   } catch (_) {}
 }
 
+async function restartOffscreenDocument() {
+  await ensureOffscreenDocument();
+  await chrome.runtime.sendMessage({ type: 'restart_offscreen' }).catch(() => {});
+}
+
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   // Only trigger when the active tab completes loading
   if (changeInfo.status === 'complete' && tab.active) {
@@ -76,6 +81,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === 'get_status') {
     sendResponse({ alive: true });
+    return true;
+  }
+
+  if (message.type === 'reload_config') {
+    restartOffscreenDocument()
+      .then(() => sendResponse({ success: true }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
