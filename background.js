@@ -189,6 +189,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'reload_config') {
+    restartOffscreenDocument()
+      .then(() => sendResponse({ success: true }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (message.type === 'get_config') {
     Promise.all([
       chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId', 'chromeProfileName']),

@@ -291,9 +291,10 @@ let ws = null;
 let authDetails = null;
 let isConnecting = false;
 let reconnectTimer = null;
+let suppressNextReconnect = false;
 let micStream;
 let audioContext;
-let workletNode;
+let scriptProcessor;
 let hasWelcomed = false;
 let trialTimeout = null;
 
@@ -306,9 +307,9 @@ let playbackCtx = null;
 
 function stopMicrophone() {
   console.log('[TernKonnect] Stopping microphone capture and cleaning up...');
-  if (workletNode) {
-    try { workletNode.disconnect(); } catch (_) {}
-    workletNode = null;
+  if (scriptProcessor) {
+    try { scriptProcessor.disconnect(); } catch (_) {}
+    scriptProcessor = null;
   }
   if (audioContext) {
     try { audioContext.close(); } catch (_) {}
@@ -323,6 +324,11 @@ function stopMicrophone() {
 }
 
 async function boot() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
   // Always clean up any existing capture resources first
   stopMicrophone();
   if (trialTimeout) {
@@ -384,7 +390,7 @@ boot();
 
 // Listen for messages from popup or background service worker
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === 'reload_config') {
+  if (message.type === 'restart_offscreen') {
     console.log('[TernKonnect] Config reload requested — restarting connection...');
     hasWelcomed = false;
     if (trialTimeout) {
@@ -392,7 +398,12 @@ chrome.runtime.onMessage.addListener((message) => {
       trialTimeout = null;
     }
     try { chrome.runtime.sendMessage({ type: 'set_session_state', state: { hasWelcomed: false } }); } catch (_) {}
-    if (ws) { ws.close(); ws = null; }
+    if (ws) {
+      suppressNextReconnect = true;
+      ws.close();
+      ws = null;
+    }
+    isConnecting = false;
     boot();
   } else if (message.type === 'page_loaded') {
     handlePageLoadedNotification(message.analysis);
