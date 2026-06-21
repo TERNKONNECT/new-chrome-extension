@@ -4,6 +4,13 @@
 
 // offscreen.js imports config.js directly — no key passing needed here
 
+import { getPlatformLabel, getSelectors, generic, linkedin } from './adapters/index.js';
+import { extractOutline } from './page-scripts/outline.js';
+import { quizPageScript } from './page-scripts/quiz.js';
+import { extractTranscript } from './page-scripts/transcript.js';
+import { controlVideoScript } from './page-scripts/video.js';
+import { analyzePageContextScript } from './page-scripts/pageContext.js';
+
 // ── Offscreen document lifecycle ──────────────────────────────────────────────
 
 async function ensureOffscreenDocument() {
@@ -19,12 +26,99 @@ async function ensureOffscreenDocument() {
   });
 }
 
-chrome.runtime.onInstalled.addListener(async () => {
+async function getChromeIdentityEmail() {
+  return new Promise((resolve) => {
+    try {
+      chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' }, (userInfo) => {
+        resolve(userInfo?.email || '');
+      });
+    } catch (_) {
+      resolve('');
+    }
+  });
+}
+
+async function ensureProfileId() {
+  const result = await chrome.storage.local.get(['chromeProfileId', 'chromeProfileName', 'chromeProfileEmail']);
+  let profileId = result.chromeProfileId;
+  let profileName = result.chromeProfileName;
+  let profileEmail = result.chromeProfileEmail;
+
+  // Always fetch current Chrome identity email
+  const currentEmail = await getChromeIdentityEmail();
+
+  if (!profileId) {
+    profileId = 'profile_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    
+    if (currentEmail) {
+      profileEmail = currentEmail;
+      const namePrefix = currentEmail.split('@')[0];
+      profileName = namePrefix.charAt(0).toUpperCase() + namePrefix.slice(1) + ` (${currentEmail})`;
+    } else {
+      profileEmail = '';
+      profileName = 'Profile-' + Math.floor(1000 + Math.random() * 9000);
+    }
+
+    await chrome.storage.local.set({ 
+      chromeProfileId: profileId, 
+      chromeProfileName: profileName,
+      chromeProfileEmail: profileEmail
+    });
+  } else if (currentEmail && currentEmail !== profileEmail) {
+    // Update profile details if identity changed
+    profileEmail = currentEmail;
+    const namePrefix = currentEmail.split('@')[0];
+    profileName = namePrefix.charAt(0).toUpperCase() + namePrefix.slice(1) + ` (${currentEmail})`;
+    await chrome.storage.local.set({
+      chromeProfileName: profileName,
+      chromeProfileEmail: profileEmail
+    });
+  }
+
+  return { profileId, profileName, profileEmail };
+}
+
+async function trackCheckIn(eventType = 'checkin') {
+  try {
+    const storage = await chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId', 'chromeProfileName', 'chromeProfileEmail']);
+    const code = storage.ternkonnectCode || storage.ternkonnectPin;
+    const profileId = storage.chromeProfileId;
+    const profileName = storage.chromeProfileName;
+    const chromeEmail = storage.chromeProfileEmail;
+
+    if (code && profileId) {
+      await fetch('http://localhost:9001/api/platform/chrome/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          integrationCode: code,
+          profileId,
+          profileName,
+          chromeEmail,
+          browserVersion: navigator.userAgent,
+          eventType
+        })
+      });
+    }
+  } catch (err) {
+    console.warn('[TernKonnect] Track check-in failed:', err.message);
+  }
+}
+
+chrome.runtime.onInstalled.addListener(async (details) => {
   await ensureOffscreenDocument();
+  await ensureProfileId();
+  await trackCheckIn('login');
+
+  if (details && details.reason === 'install') {
+    chrome.tabs.create({ url: 'setup.html' });
+  }
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await ensureOffscreenDocument();
+  await ensureProfileId();
+  await trackCheckIn('login');
 });
 
 // Re-create the offscreen document if the service worker wakes up and it's gone
@@ -34,20 +128,36 @@ async function keepAlive() {
   } catch (_) {}
 }
 
+// Builds the config object passed into analyzePageContextScript: resolves the
+// platform via adapters/index.js (URL-only, no DOM needed for the three named
+// adapters), plus the merged dashboard/search/enroll selectors and the
+// generic self-hosted-LMS sniff hints used when no named adapter matches.
+function buildPageContextConfig(url) {
+  return {
+    resolvedPlatformLabel: getPlatformLabel(url),
+    hints: generic.pageType.hints,
+    dashboard: getSelectors(url, 'dashboard'),
+    search: getSelectors(url, 'search'),
+    enroll: getSelectors(url, 'enroll'),
+    social: linkedin.social
+  };
+}
+
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   // Only trigger when the active tab completes loading
   if (changeInfo.status === 'complete' && tab.active) {
     if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
       return;
     }
-    
+
     try {
       await ensureOffscreenDocument();
-      const analysis = await runInTab(analyzePageContext).catch((err) => {
-        console.warn('[TernKonnect] analyzePageContext run error:', err);
+      const pageContextConfig = buildPageContextConfig(tab.url);
+      const analysis = await runInTab(analyzePageContextScript, [pageContextConfig]).catch((err) => {
+        console.warn('[TernKonnect] analyzePageContextScript run error:', err);
         return { url: tab.url, title: tab.title, isLMS: false };
       });
-      
+
       // Send message to offscreen
       chrome.runtime.sendMessage({
         type: 'page_loaded',
@@ -80,9 +190,100 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'get_config') {
-    chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectPin']).then(res => {
-      sendResponse({ email: res.ternkonnectEmail, pin: res.ternkonnectPin });
-    }).catch(() => sendResponse({ email: null, pin: null }));
+    Promise.all([
+      chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId', 'chromeProfileName']),
+      chrome.storage.session.get('wsStatus'),
+      checkOrStartTrial()
+    ]).then(([storage, session, trialInfo]) => {
+      const email = storage.ternkonnectEmail;
+      const code = storage.ternkonnectCode || storage.ternkonnectPin;
+      const profileId = storage.chromeProfileId;
+      const profileName = storage.chromeProfileName;
+      const wsStatus = session?.wsStatus || 'disconnected';
+
+      if (email && code) {
+        sendResponse({
+          email,
+          integrationCode: code,
+          trial: false,
+          profileId,
+          profileName,
+          wsStatus
+        });
+      } else {
+        sendResponse({
+          email: trialInfo.trialExpired ? null : `trial-${profileId}`,
+          integrationCode: trialInfo.trialExpired ? null : 'TRIAL',
+          trial: !trialInfo.trialExpired,
+          trialExpired: trialInfo.trialExpired,
+          trialsCount: trialInfo.trialsCount,
+          trialActive: trialInfo.trialActive,
+          trialStartTimestamp: trialInfo.trialStartTimestamp,
+          remainingTime: trialInfo.trialActive ? Math.max(0, 5 * 60 * 1000 - (Date.now() - trialInfo.trialStartTimestamp)) : 0,
+          profileId,
+          profileName,
+          wsStatus
+        });
+      }
+    }).catch(() => sendResponse({ email: null, integrationCode: null, wsStatus: 'disconnected' }));
+    return true;
+  }
+
+  if (message.type === 'integrate_profile') {
+    const { email, integrationCode } = message;
+    ensureProfileId().then(async ({ profileId, profileName, profileEmail }) => {
+      try {
+        const response = await fetch('http://localhost:9001/api/platform/chrome/integrate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email,
+            integrationCode,
+            profileId,
+            profileName,
+            chromeEmail: profileEmail,
+            browserVersion: navigator.userAgent
+          })
+        });
+        const data = await response.json();
+        if (response.ok) {
+          await chrome.storage.local.set({
+            ternkonnectEmail: email,
+            ternkonnectCode: integrationCode
+          });
+          // Check in immediately after integration
+          await trackCheckIn('login');
+          sendResponse({ success: true, message: data.message });
+        } else {
+          sendResponse({ success: false, error: data.error || 'Failed to integrate' });
+        }
+      } catch (err) {
+        sendResponse({ success: false, error: 'Cannot connect to platform' });
+      }
+    });
+    return true;
+  }
+
+  if (message.type === 'log_profile_activity') {
+    const { actionType, description, metadata } = message;
+    chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId', 'trialActive']).then((storage) => {
+      const code = storage.ternkonnectCode || storage.ternkonnectPin || (storage.trialActive ? 'TRIAL' : 'inactive');
+      const profileId = storage.chromeProfileId;
+
+      fetch('http://localhost:9001/api/platform/chrome/log-activity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          integrationCode: code,
+          profileId,
+          actionType,
+          description,
+          metadata
+        })
+      }).then(r => r.json())
+        .then(data => sendResponse({ success: true, data }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+    }).catch(() => sendResponse({ success: false }));
     return true;
   }
 
@@ -96,6 +297,39 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 });
+
+async function checkOrStartTrial() {
+  const data = await chrome.storage.local.get(['trialsCount', 'trialActive', 'trialStartTimestamp']);
+  let trialsCount = data.trialsCount || 0;
+  let trialActive = data.trialActive || false;
+  let trialStartTimestamp = data.trialStartTimestamp || 0;
+
+  const now = Date.now();
+  const trialDuration = 5 * 60 * 1000; // 5 minutes
+
+  if (trialActive) {
+    const elapsed = now - trialStartTimestamp;
+    if (elapsed >= trialDuration) {
+      trialActive = false;
+      await chrome.storage.local.set({ trialActive });
+    }
+  }
+
+  // If not active, can we start a new one?
+  if (!trialActive && trialsCount < 3) {
+    trialsCount += 1;
+    trialActive = true;
+    trialStartTimestamp = now;
+    await chrome.storage.local.set({ trialsCount, trialActive, trialStartTimestamp });
+  }
+
+  return {
+    trialsCount,
+    trialActive,
+    trialStartTimestamp,
+    trialExpired: trialsCount >= 3 && !trialActive
+  };
+}
 
 // ── Tool implementations ───────────────────────────────────────────────────────
 
@@ -468,73 +702,17 @@ async function takeScreenshot() {
 }
 
 // ── Video control ──────────────────────────────────────────────────────────────
+// Runs in all frames (not just the top one) to reach videos inside iframes.
 
 async function controlVideo(action, value) {
   const tab = await getActiveTab();
   if (!tab) return { success: false, message: 'No active tab' };
 
+  const config = getSelectors(tab.url, 'video');
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id, allFrames: true },
-    func: (act, val) => {
-      let video = document.querySelector('video');
-      
-      // If no video but trying to play, try clicking overlay play buttons (Udemy, Video.js, etc.)
-      if (!video && act === 'play') {
-        const btn = document.querySelector('[data-purpose="video-play-button"], .vjs-big-play-button, button[aria-label="Play"], .play-button');
-        if (btn) {
-          btn.click();
-          return { success: true, action: 'play', note: 'Clicked play button overlay' };
-        }
-      }
-
-      if (!video) return null; // Skip this frame
-
-      try {
-        switch (act) {
-          case 'play':
-            video.play();
-            return { success: true, action: 'play' };
-          case 'pause':
-            video.pause();
-            return { success: true, action: 'pause' };
-          case 'toggle':
-            if (video.paused) { video.play(); return { success: true, action: 'resumed' }; }
-            else { video.pause(); return { success: true, action: 'paused' }; }
-          case 'forward':
-            video.currentTime = Math.min(video.duration, video.currentTime + (val || 10));
-            return { success: true, action: 'forward', seconds: val || 10 };
-          case 'rewind':
-            video.currentTime = Math.max(0, video.currentTime - (val || 10));
-            return { success: true, action: 'rewind', seconds: val || 10 };
-          case 'speed':
-            video.playbackRate = val || 1;
-            return { success: true, action: 'speed', rate: val || 1 };
-          case 'mute':
-            video.muted = !video.muted;
-            return { success: true, action: video.muted ? 'muted' : 'unmuted' };
-          case 'status': {
-            const mins = Math.floor(video.currentTime / 60);
-            const secs = Math.floor(video.currentTime % 60);
-            const durMins = Math.floor(video.duration / 60);
-            const durSecs = Math.floor(video.duration % 60);
-            return {
-              success: true,
-              paused: video.paused,
-              currentTime: `${mins}:${secs.toString().padStart(2, '0')}`,
-              duration: `${durMins}:${durSecs.toString().padStart(2, '0')}`,
-              playbackRate: video.playbackRate,
-              muted: video.muted,
-              volume: Math.round(video.volume * 100) + '%'
-            };
-          }
-          default:
-            return { success: false, message: `Unknown video action: ${act}` };
-        }
-      } catch (err) {
-        return { success: false, message: err.message };
-      }
-    },
-    args: [action, value]
+    func: controlVideoScript,
+    args: [action, value, config]
   });
 
   // Find the first frame that successfully found a video (or clicked a button)
@@ -548,162 +726,17 @@ async function controlVideo(action, value) {
 // ── LMS: Video Transcript ──────────────────────────────────────────────────────
 
 async function getVideoTranscript() {
-  return runInTab(() => {
-    // Selectors for common transcript containers
-    const selectors = [
-      '.rc-Transcript',                 // Coursera
-      '[data-purpose="transcript-panel"]', // Udemy
-      '.transcript-text',               // Generic
-      '.video-transcript',
-      '.wrapper-transcripts',           // edX
-      '#transcript',
-      '[aria-label="Transcript"]'
-    ];
-
-    let transcriptEl = null;
-    for (const sel of selectors) {
-      transcriptEl = document.querySelector(sel);
-      if (transcriptEl) break;
-    }
-
-    if (!transcriptEl) {
-      // Fallback: search for elements that look like subtitles or captions
-      const trackEls = Array.from(document.querySelectorAll('.vjs-text-track-display, .captions-text, [class*="caption"], [class*="subtitle"]'));
-      if (trackEls.length > 0) {
-        const text = trackEls.map(el => el.textContent.trim()).filter(Boolean).join(' ');
-        if (text.length > 10) return { success: true, text: text.slice(0, 5000), note: 'Extracted from on-screen captions (may be incomplete).' };
-      }
-      return { success: false, message: 'No transcript or closed captions found on the page. Try looking for a "Show Transcript" button.' };
-    }
-
-    // Extract text from the transcript container
-    const lines = Array.from(transcriptEl.querySelectorAll('p, span, li, div'))
-      .map(el => {
-        // Only get text nodes directly inside the element to avoid duplication
-        let text = '';
-        for (let node of el.childNodes) {
-          if (node.nodeType === Node.TEXT_NODE) text += node.nodeValue + ' ';
-        }
-        return text.trim();
-      })
-      .filter(text => text.length > 5);
-
-    // Deduplicate consecutive identical lines (sometimes structure causes duplicates)
-    const uniqueLines = [];
-    for (const line of lines) {
-      if (uniqueLines.length === 0 || uniqueLines[uniqueLines.length - 1] !== line) {
-        uniqueLines.push(line);
-      }
-    }
-
-    const fullText = uniqueLines.join(' ');
-    if (!fullText || fullText.length < 10) {
-      return { success: false, message: 'Transcript container found, but it is empty. It might be loading or hidden.' };
-    }
-
-    return { 
-      success: true, 
-      text: fullText.slice(0, 10000), // Cap at 10,000 characters to avoid breaking payload limits
-      length: fullText.length 
-    };
-  });
+  const tab = await getActiveTab();
+  const config = getSelectors(tab.url, 'transcript');
+  return runInTab(extractTranscript, [config]);
 }
 
 // ── LMS: Course outline / syllabus ─────────────────────────────────────────────
 
 async function getLmsOutline() {
-  return runInTab(() => {
-    const items = [];
-
-    // ── Coursera-style selectors ──
-    // Coursera uses various list/link structures; try several patterns
-    const courseraSelectors = [
-      // Week/module items
-      '.rc-WeekItemName a',
-      '.rc-ItemName a',
-      '[data-track-component="syllabus_item"] a',
-      // Sidebar navigation
-      '.rc-SidebarItem a',
-      'nav a[data-track-component]',
-      // General lesson links
-      '.lesson-name a',
-      '.item-name a',
-      // New Coursera UI
-      '[class*="ItemName"] a',
-      '[class*="syllabus"] a'
-    ];
-
-    // ── Generic LMS selectors (edX, Moodle, Canvas, Udemy, etc.) ──
-    const genericSelectors = [
-      // edX / Open edX
-      '.outline-item a',
-      '.sequence-list-wrapper a',
-      '.chapter a',
-      // Moodle
-      '.activity-item a',
-      '.section .activity a',
-      '.course-content a.aalink',
-      // Canvas
-      '.context_module_item a.title',
-      '#context_modules .ig-title a',
-      // Udemy
-      '[data-purpose="curriculum-item-title"]',
-      // Generic patterns
-      'nav[aria-label*="course"] a',
-      'aside a[href*="lesson"]',
-      'aside a[href*="module"]',
-      '.sidebar a[href]'
-    ];
-
-    const allSelectors = [...courseraSelectors, ...genericSelectors];
-    const seen = new Set();
-
-    for (const sel of allSelectors) {
-      try {
-        const els = document.querySelectorAll(sel);
-        for (const el of els) {
-          const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-          if (!text || text.length > 200 || seen.has(text)) continue;
-          seen.add(text);
-
-          const isComplete =
-            el.closest('[class*="completed"]') !== null ||
-            el.closest('[class*="done"]') !== null ||
-            el.querySelector('[class*="check"], [class*="complete"]') !== null;
-
-          items.push({
-            index: items.length,
-            title: text,
-            url: el.href || null,
-            completed: isComplete
-          });
-        }
-      } catch (_) { /* selector not present */ }
-    }
-
-    // Fallback: if no items found, try to find any sidebar or nav links
-    if (items.length === 0) {
-      const fallbackEls = document.querySelectorAll('aside a[href], nav a[href], [role="navigation"] a[href]');
-      for (const el of fallbackEls) {
-        const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!text || text.length > 200 || text.length < 3 || seen.has(text)) continue;
-        seen.add(text);
-        items.push({
-          index: items.length,
-          title: text,
-          url: el.href || null,
-          completed: false
-        });
-      }
-    }
-
-    return {
-      success: true,
-      pageTitle: document.title,
-      itemCount: items.length,
-      items: items.slice(0, 40) // cap at 40 to avoid huge payloads
-    };
-  });
+  const tab = await getActiveTab();
+  const config = getSelectors(tab.url, 'outline');
+  return runInTab(extractOutline, [config]);
 }
 
 // ── LMS: Click a specific outline item by index ────────────────────────────────
@@ -731,299 +764,15 @@ async function clickLmsItem(index) {
 // ── LMS: Quiz extraction ──────────────────────────────────────────────────────
 
 async function getQuizDetails() {
-  return runInTab(() => {
-    function getQuizContainers() {
-      const selectors = [
-        '.rc-FormPartsQuestion',
-        '[data-testid*="question"]',
-        '[class*="QuestionBody"]',
-        '.quiz-question',
-        '.question',
-        'fieldset',
-        '[role="group"][aria-labelledby]',
-        '.wrapper-problem-response',
-        '.que',
-        '.question_holder'
-      ];
-      return Array.from(document.querySelectorAll(selectors.join(', '))).filter(c => {
-        let els = c.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]');
-        if (els.length === 0) {
-          els = c.querySelectorAll('.rc-Option, [class*="Option"], .answer, .option');
-        }
-        return els.length > 0;
-      });
-    }
-
-    function getQuestionOptions(c) {
-      let els = c.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]');
-      if (els.length === 0) {
-        els = c.querySelectorAll('.rc-Option, [class*="Option"], .answer, .option');
-      }
-      return Array.from(els);
-    }
-
-    const questions = [];
-    const containers = getQuizContainers();
-
-    let idx = 0;
-    for (const container of containers) {
-      // Extract question text
-      const qTextEl = container.querySelector(
-        'legend, .question-text, [class*="prompt"], ' +
-        '[class*="QuestionText"], h3, h4, p:first-of-type, ' +
-        '.qtext, .question_text'
-      );
-      const qText = qTextEl
-        ? qTextEl.textContent.replace(/\s+/g, ' ').trim()
-        : container.textContent.replace(/\s+/g, ' ').trim().slice(0, 300);
-
-      if (!qText || qText.length < 5) continue;
-
-      // Extract options
-      const optionEls = getQuestionOptions(container);
-
-      const options = [];
-      let optIdx = 0;
-      for (const opt of optionEls) {
-        const label = opt.closest('label')?.textContent?.replace(/\s+/g, ' ').trim()
-          || opt.getAttribute('aria-label')
-          || (opt.id ? document.querySelector(`label[for="${opt.id}"]`)?.textContent?.replace(/\s+/g, ' ').trim() : null)
-          || opt.textContent?.replace(/\s+/g, ' ').trim()
-          || `Option ${optIdx + 1}`;
-
-        const isSelected =
-          opt.checked ||
-          opt.getAttribute('aria-checked') === 'true' ||
-          opt.classList.contains('selected') ||
-          (opt.tagName !== 'INPUT' && opt.querySelector('input')?.checked);
-
-        options.push({
-          index: optIdx,
-          label: label.slice(0, 300),
-          selected: !!isSelected
-        });
-        optIdx++;
-      }
-
-      questions.push({
-        index: idx,
-        question: qText.slice(0, 500),
-        options,
-        optionCount: options.length
-      });
-      idx++;
-    }
-
-    return {
-      success: true,
-      pageTitle: document.title,
-      questionCount: questions.length,
-      questions: questions.slice(0, 20)
-    };
-  });
+  const tab = await getActiveTab();
+  const config = getSelectors(tab.url, 'quiz');
+  return runInTab(quizPageScript, [config, 'extract']);
 }
 
 // ── LMS: Answer a quiz question ────────────────────────────────────────────────
 
 async function answerQuiz(questionIndex, optionIndex) {
-  return runInTab((qIdx, oIdx) => {
-    function getQuizContainers() {
-      const selectors = [
-        '.rc-FormPartsQuestion',
-        '[data-testid*="question"]',
-        '[class*="QuestionBody"]',
-        '.quiz-question',
-        '.question',
-        'fieldset',
-        '[role="group"][aria-labelledby]',
-        '.wrapper-problem-response',
-        '.que',
-        '.question_holder'
-      ];
-      return Array.from(document.querySelectorAll(selectors.join(', '))).filter(c => {
-        let els = c.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]');
-        if (els.length === 0) {
-          els = c.querySelectorAll('.rc-Option, [class*="Option"], .answer, .option');
-        }
-        return els.length > 0;
-      });
-    }
-
-    function getQuestionOptions(c) {
-      let els = c.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]');
-      if (els.length === 0) {
-        els = c.querySelectorAll('.rc-Option, [class*="Option"], .answer, .option');
-      }
-      return Array.from(els);
-    }
-
-    const containers = getQuizContainers();
-
-    if (qIdx < 0 || qIdx >= containers.length) {
-      return { success: false, message: `Question index ${qIdx} out of range (0–${containers.length - 1})` };
-    }
-
-    const container = containers[qIdx];
-    const optionEls = getQuestionOptions(container);
-
-    if (oIdx < 0 || oIdx >= optionEls.length) {
-      return { success: false, message: `Option index ${oIdx} out of range (0–${optionEls.length - 1})` };
-    }
-
-    const target = optionEls[oIdx];
-
-    // Click the input, option container, or its label
-    const label = target.closest('label') || document.querySelector(`label[for="${target.id}"]`);
-    if (label) {
-      label.click();
-    } else {
-      target.click();
-    }
-
-    // Also set checked and fire events for React compatibility
-    let inputEl = target.tagName === 'INPUT' ? target : target.querySelector('input');
-    if (inputEl) {
-      inputEl.checked = true;
-      inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-
-    const chosenLabel = label?.textContent?.replace(/\s+/g, ' ').trim() || target.textContent?.replace(/\s+/g, ' ').trim() || `Option ${oIdx}`;
-    return {
-      success: true,
-      questionIndex: qIdx,
-      optionIndex: oIdx,
-      selectedLabel: chosenLabel.slice(0, 200)
-    };
-  }, [questionIndex, optionIndex]);
-}
-
-// ── LMS Page Context Analysis ──────────────────────────────────────────────────
-
-function analyzePageContext() {
-  const url = window.location.href;
-  const title = document.title;
-  
-  let lmsPlatform = null;
-  if (url.includes('coursera.org')) lmsPlatform = 'Coursera';
-  else if (url.includes('edx.org')) lmsPlatform = 'edX';
-  else if (url.includes('udemy.com')) lmsPlatform = 'Udemy';
-  else if (url.includes('canvas') || document.querySelector('.ic-app-header')) lmsPlatform = 'Canvas';
-  else if (url.includes('moodle') || document.querySelector('.moodle-wrapper')) lmsPlatform = 'Moodle';
-  
-  let isLinkedIn = false;
-  if (url.includes('linkedin.com')) {
-    isLinkedIn = true;
-  }
-  
-  if (!lmsPlatform && !isLinkedIn) {
-    return { url, title, isLMS: false };
-  }
-  
-  let pageType = 'unknown';
-  let contextInfo = {};
-  
-  const path = window.location.pathname.toLowerCase();
-  
-  // Determine page type
-  if (path.includes('login') || path.includes('signin') || path.includes('signup') || document.querySelector('input[type="password"]')) {
-    pageType = 'login';
-  } else if (path.includes('dashboard') || path.includes('home') || path === '/' || path === '/home' || path.includes('my-courses')) {
-    pageType = 'dashboard';
-    
-    // Find enrolled courses if visible
-    const courses = [];
-    if (lmsPlatform === 'Coursera') {
-      const links = document.querySelectorAll('a[href*="/learn/"]');
-      const seenSlugs = new Set();
-      links.forEach(link => {
-        const href = link.href;
-        const match = href.match(/\/learn\/([^/]+)/);
-        if (match) {
-          const slug = match[1];
-          if (!seenSlugs.has(slug)) {
-            seenSlugs.add(slug);
-            let titleText = link.textContent.trim().replace(/\s+/g, ' ');
-            if (titleText.length < 5 || ['continue', 'go to course', 'resume', 'learn'].includes(titleText.toLowerCase())) {
-              const parentCard = link.closest('.rc-MobileCourseCard, .rc-CourseCard, div[class*="card"], div[class*="Card"]');
-              if (parentCard) {
-                const heading = parentCard.querySelector('h1, h2, h3, h4, [class*="title"], [class*="Name"]');
-                if (heading) titleText = heading.textContent.trim();
-              }
-            }
-            if (titleText && titleText.length > 3 && !['continue', 'go to course', 'resume', 'learn'].includes(titleText.toLowerCase())) {
-              courses.push({ title: titleText, url: href });
-            }
-          }
-        }
-      });
-    }
-    contextInfo.enrolledCourses = courses;
-  } else if (path.includes('search') || url.includes('query=')) {
-    pageType = 'search_results';
-    const results = [];
-    if (lmsPlatform === 'Coursera') {
-      const cards = document.querySelectorAll('[data-testid="product-card"], .rc-ProductCard, [class*="productCard"]');
-      if (cards.length > 0) {
-        cards.forEach(card => {
-          const titleEl = card.querySelector('h3, h4, a, [class*="title"]');
-          const ratingEl = card.querySelector('.ratings-text, .rating-number, [class*="rating"]');
-          const descEl = card.querySelector('.card-description, [class*="description"], [class*="difficulty"]');
-          if (titleEl) {
-            results.push({
-              title: titleEl.textContent.trim(),
-              rating: ratingEl ? ratingEl.textContent.trim() : 'N/A',
-              description: descEl ? descEl.textContent.trim() : ''
-            });
-          }
-        });
-      } else {
-        const links = document.querySelectorAll('a[href*="/courses/"], a[href*="/specializations/"], a[href*="/professional-certificates/"]');
-        const seen = new Set();
-        links.forEach(link => {
-          const href = link.href;
-          const text = link.textContent.trim().replace(/\s+/g, ' ');
-          if (text.length > 8 && !seen.has(href)) {
-            seen.add(href);
-            const parent = link.parentElement;
-            let rating = 'N/A';
-            if (parent) {
-              const ratingEl = parent.querySelector('[class*="rating"], [class*="Rating"]');
-              if (ratingEl) rating = ratingEl.textContent.trim();
-            }
-            results.push({ title: text, rating, url: href, description: '' });
-          }
-        });
-      }
-    }
-    contextInfo.searchResults = results.slice(0, 5);
-  } else if (path.includes('learn/') && (path.includes('lecture/') || path.includes('item/') || path.includes('supplement/') || path.includes('quiz') || path.includes('exam') || path.includes('assessment'))) {
-    if (path.includes('quiz') || path.includes('exam') || path.includes('assessment')) {
-      pageType = 'quiz';
-    } else {
-      pageType = 'lecture';
-    }
-  } else if (path.includes('learn/') || path.includes('courses/') || path.includes('course/')) {
-    pageType = 'course_home';
-    const enrollBtn = document.querySelector('button[class*="enroll"], a[href*="enroll"], .enroll-button, [data-testid="enroll-button"], [data-click-key*="enroll"]');
-    contextInfo.hasEnrollButton = !!enrollBtn;
-  } else if (isLinkedIn) {
-    if (path.includes('/feed')) {
-      pageType = 'linkedin_feed';
-    } else if (path.includes('/in/')) {
-      pageType = 'linkedin_profile';
-    } else {
-      pageType = 'linkedin_other';
-    }
-  }
-  
-  return {
-    url,
-    title,
-    isLMS: !!lmsPlatform,
-    lmsPlatform,
-    isLinkedIn,
-    pageType,
-    contextInfo
-  };
+  const tab = await getActiveTab();
+  const config = getSelectors(tab.url, 'quiz');
+  return runInTab(quizPageScript, [config, 'select', questionIndex, optionIndex]);
 }

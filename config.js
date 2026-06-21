@@ -8,8 +8,8 @@
 export async function getTernkonnectAuth() {
   try {
     const result = await chrome.runtime.sendMessage({ type: 'get_config' });
-    if (result && result.email && result.pin) {
-      return { email: result.email, pin: result.pin };
+    if (result) {
+      return result;
     }
   } catch (_) {
     // storage unavailable — fall through

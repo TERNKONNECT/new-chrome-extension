@@ -295,6 +295,7 @@ let micStream;
 let audioContext;
 let workletNode;
 let hasWelcomed = false;
+let trialTimeout = null;
 
 // Audio playback queue (we queue chunks and play them sequentially)
 let playbackQueue = [];
@@ -324,6 +325,10 @@ function stopMicrophone() {
 async function boot() {
   // Always clean up any existing capture resources first
   stopMicrophone();
+  if (trialTimeout) {
+    clearTimeout(trialTimeout);
+    trialTimeout = null;
+  }
 
   // Load session state to avoid repeating welcome message on unexpected browser reloads
   try {
@@ -331,13 +336,43 @@ async function boot() {
     hasWelcomed = !!sessionData.hasWelcomed;
   } catch (_) {}
 
-  // API key comes from chrome.storage.local (saved via popup)  // 4) Load Auth
+  // Load Auth
   authDetails = await getTernkonnectAuth();
 
-  if (!authDetails || !authDetails.email || !authDetails.pin) {
-    console.warn('[TernKonnect] No auth configured. Please add Email and PIN in settings.');
-    // Keep mic running, but we won't connect to WS until configured.
+  if (!authDetails) {
+    console.warn('[TernKonnect] No configuration loaded.');
     return;
+  }
+
+  if (authDetails.trialExpired) {
+    console.warn('[TernKonnect] Trial expired. Login required.');
+    speakFallback("Your trial period has expired. Please log in and subscribe to continue.");
+    return;
+  }
+
+  if (!authDetails.trial && (!authDetails.email || !authDetails.integrationCode)) {
+    console.warn('[TernKonnect] No auth configured. Please log in to continue.');
+    return;
+  }
+
+  // If in active trial, set up expiration timer
+  if (authDetails.trial) {
+    console.log(`[TernKonnect] Running in trial mode. Remaining time: ${authDetails.remainingTime}ms`);
+    trialTimeout = setTimeout(() => {
+      console.warn('[TernKonnect] Trial expired during use.');
+      stopMicrophone();
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+      speakFallback("Your five minute trial session has ended. Please log in and subscribe to continue.");
+      try { chrome.runtime.sendMessage({ type: 'trial_expired' }); } catch (_) {}
+    }, authDetails.remainingTime);
+
+    // Speak trial start announcement if it's a new trial segment
+    if (authDetails.remainingTime > 290000) {
+      speakFallback(`Starting trial session ${authDetails.trialsCount} of 3. This trial will last for 5 minutes.`);
+    }
   }
 
   await startMicrophone();
@@ -352,6 +387,10 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'reload_config') {
     console.log('[TernKonnect] Config reload requested — restarting connection...');
     hasWelcomed = false;
+    if (trialTimeout) {
+      clearTimeout(trialTimeout);
+      trialTimeout = null;
+    }
     try { chrome.runtime.sendMessage({ type: 'set_session_state', state: { hasWelcomed: false } }); } catch (_) {}
     if (ws) { ws.close(); ws = null; }
     boot();
@@ -428,6 +467,18 @@ function handlePageLoadedNotification(analysis) {
 
 async function startMicrophone() {
   try {
+    // Check permission state first to avoid throwing NotAllowedError automatically
+    try {
+      const perm = await navigator.permissions.query({ name: 'microphone' });
+      if (perm.state !== 'granted') {
+        console.warn('[TernKonnect] Microphone permission state is:', perm.state, '- skipping getUserMedia request to avoid NotAllowedError.');
+        speakFallback('Microphone access is not set up yet. Please open the extension popup and complete the microphone setup.');
+        return;
+      }
+    } catch (e) {
+      console.warn('[TernKonnect] navigator.permissions.query failed or not supported:', e);
+    }
+
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -457,12 +508,13 @@ async function startMicrophone() {
 
     const source = audioContext.createMediaStreamSource(micStream);
 
-    // ScriptProcessorNode: buffer of 4096 samples @ 16kHz ≈ 256ms per chunk
-    scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+    // AudioWorkletNode: load audio-processor.js and handle chunks
+    await audioContext.audioWorklet.addModule('audio-processor.js');
+    workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
 
-    scriptProcessor.onaudioprocess = (e) => {
+    workletNode.port.onmessage = (event) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const float32 = e.inputBuffer.getChannelData(0);
+      const float32 = event.data;
       const int16 = float32ToInt16(float32);
       const b64 = bufferToBase64(int16.buffer);
       ws.send(JSON.stringify({
@@ -475,8 +527,8 @@ async function startMicrophone() {
     // Connect through a silent gain so we don't echo mic into speakers
     const silent = audioContext.createGain();
     silent.gain.value = 0;
-    source.connect(scriptProcessor);
-    scriptProcessor.connect(silent);
+    source.connect(workletNode);
+    workletNode.connect(silent);
     silent.connect(audioContext.destination);
 
     console.log('[TernKonnect] Microphone capture active and connected to Web Audio pipeline.');
@@ -496,15 +548,28 @@ async function startMicrophone() {
 
 // ── Gemini WebSocket ───────────────────────────────────────────────────────────
 
+async function updateWsStatus(status) {
+  try {
+    await chrome.runtime.sendMessage({ type: 'set_session_state', state: { wsStatus: status } });
+  } catch (_) {}
+}
+
 function connectToGemini() {
   if (isConnecting || (ws && ws.readyState === WebSocket.OPEN)) return;
   isConnecting = true;
+  updateWsStatus('connecting');
 
-  const url = `${GEMINI_WS_BASE}?email=${encodeURIComponent(authDetails.email)}&pin=${encodeURIComponent(authDetails.pin)}`;
+  let url;
+  if (authDetails.trial) {
+    url = `${GEMINI_WS_BASE}?trial=true&profileId=${encodeURIComponent(authDetails.profileId)}`;
+  } else {
+    url = `${GEMINI_WS_BASE}?email=${encodeURIComponent(authDetails.email)}&integrationCode=${encodeURIComponent(authDetails.integrationCode)}&profileId=${encodeURIComponent(authDetails.profileId)}`;
+  }
   ws = new WebSocket(url);
 
   ws.onopen = () => {
     isConnecting = false;
+    updateWsStatus('connected');
     console.log('[TernKonnect] Connected to Gemini');
 
     // Send setup — all three fields are valid at the top level of setup.
@@ -546,12 +611,14 @@ function connectToGemini() {
     console.warn('[TernKonnect] WebSocket closed:', event.code, event.reason);
     isConnecting = false;
     ws = null;
+    updateWsStatus('disconnected');
     scheduleReconnect();
   };
 
   ws.onerror = (err) => {
     console.error('[TernKonnect] WebSocket error:', err);
     isConnecting = false;
+    updateWsStatus('error');
   };
 }
 
@@ -625,6 +692,18 @@ async function handleFunctionCall(call) {
 
   const result = response?.result ?? { error: 'No result from background' };
   console.log(`[TernKonnect] Tool result for ${name}:`, result);
+
+  // Log the activity to the platform
+  try {
+    chrome.runtime.sendMessage({
+      type: 'log_profile_activity',
+      actionType: name,
+      description: `Executed tool "${name}"`,
+      metadata: { args, result }
+    });
+  } catch (err) {
+    console.warn('[TernKonnect] Failed to send activity log message:', err.message);
+  }
 
   // Return result to Gemini
   if (ws && ws.readyState === WebSocket.OPEN) {

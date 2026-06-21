@@ -5,33 +5,19 @@ The user speaks, Gemini understands, and the extension takes action — navigate
 
 ---
 
-## Setup (4 steps)
+## Setup (2 steps)
 
-### Step 1 — Get a Gemini API Key
-1. Go to [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
-2. Click **Create API Key**
-3. Copy the key
-
-### Step 2 — Add your API Key
-Open `config.js` and replace the placeholder:
-```js
-export const GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY_HERE';
-// ↓ becomes ↓
-export const GEMINI_API_KEY = 'AIza...your-actual-key...';
-```
-
-### Step 3 — Generate the Icons
-1. Open `generate_icons.html` in Chrome (drag it into the address bar)
-2. Four PNG files will download automatically: `icon16.png`, `icon32.png`, `icon48.png`, `icon128.png`
-3. Create a folder called `icons/` inside `new_chrome_extension/`
-4. Move the four downloaded PNG files into `icons/`
-
-### Step 4 — Load the Extension in Chrome
+### Step 1 — Load the Extension in Chrome
 1. Open Chrome and go to `chrome://extensions/`
 2. Turn on **Developer Mode** (top-right toggle)
 3. Click **Load unpacked**
-4. Select the `new_chrome_extension/` folder
+4. Select the `new-chrome-extension/` folder
 5. When prompted, allow **Microphone** access
+
+### Step 2 — Link with the Platform
+- The extension automatically starts in a 3-session **Trial Mode** (5 minutes per session).
+- To unlock unlimited usage, generate an **Integration Code** on the platform dashboard under the **Tools** tab.
+- Click the settings icon (⚙) in the extension popup (or the login button on trial expiry) and enter your sign-up email and integration code.
 
 ---
 

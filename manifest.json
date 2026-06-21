@@ -8,7 +8,9 @@
     "scripting",
     "tabs",
     "storage",
-    "offscreen"
+    "offscreen",
+    "identity",
+    "identity.email"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
