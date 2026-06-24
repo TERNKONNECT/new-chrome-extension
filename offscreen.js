@@ -14,17 +14,32 @@ import { getTernkonnectAuth } from './config.js';
 // is no client-side system prompt or anonymous proxy path anymore.
 const INTELLIGENCE_WS_URL = 'ws://localhost:8000/ws';
 
+// Forgiving match: STT often mis-hears "Tern" as "Turn", and may or may not
+// split "Konnect" into two words.
+const WAKE_PHRASE = /\bhey,?\s*t[ue]rn\s*-?\s*konnect\b/i;
+// How long to stay connected after the conversation goes quiet before
+// proactively disconnecting — well under the server's own idle timeout,
+// specifically to avoid burning a capped session's minutes while idle.
+const WAKE_REARM_IDLE_SECONDS = 90;
+
 // ── State ──────────────────────────────────────────────────────────────────────
 
 let ws = null;
 let authDetails = null;
 let isConnecting = false;
-let reconnectTimer = null;
 let suppressNextReconnect = false;
 let micStream;
 let audioContext;
 let workletNode;
 let hasWelcomed = false;
+
+// Wake-word gating: the assistant starts dormant (just listening for the
+// wake phrase via the browser's own speech recognizer) and only opens the
+// — capped, costed — Gemini Live session once summoned.
+let awake = false;
+let recognizer = null;
+let wakeIdleTimer = null;
+let lastWakeIdleResetAt = 0;
 
 // Audio playback queue (we queue chunks and play them sequentially)
 let playbackQueue = [];
@@ -52,13 +67,10 @@ function stopMicrophone() {
 }
 
 async function boot() {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-
   // Always clean up any existing capture resources first
   stopMicrophone();
+  stopWakeWordListener();
+  awake = false;
 
   // Load session state to avoid repeating welcome message on unexpected browser reloads
   try {
@@ -72,11 +84,121 @@ async function boot() {
 
   if (!authDetails || !authDetails.email || !authDetails.integrationCode) {
     console.warn('[TernKonnect] No account linked yet. Open the extension popup and enter your email + integration code.');
+    updateWsStatus('disconnected');
     return;
   }
 
+  // Dormant by default — the costed, capped-duration Gemini Live session
+  // only opens once the wake phrase is heard (see wakeUp()), so just having
+  // the extension open and waiting doesn't burn a Starter/Enterprise
+  // session's allotted minutes.
+  startWakeWordListener();
+}
+
+// ── Wake word ────────────────────────────────────────────────────────────────
+
+function startWakeWordListener() {
+  updateWsStatus('dormant');
+  if (recognizer) return; // already listening
+
+  const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognitionImpl) {
+    console.warn('[TernKonnect] SpeechRecognition unavailable in this context — wake word disabled, waking immediately instead.');
+    wakeUp();
+    return;
+  }
+
+  recognizer = new SpeechRecognitionImpl();
+  recognizer.continuous = true;
+  recognizer.interimResults = true;
+  recognizer.lang = 'en-US';
+
+  recognizer.onresult = (event) => {
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0]?.transcript || '';
+      if (WAKE_PHRASE.test(transcript)) {
+        console.log('[TernKonnect] Wake phrase detected:', transcript.trim());
+        wakeUp();
+        return;
+      }
+    }
+  };
+
+  recognizer.onerror = (event) => {
+    // 'no-speech' fires routinely on silence; onend below restarts it regardless.
+    console.warn('[TernKonnect] Wake word recognizer error:', event.error);
+  };
+
+  recognizer.onend = () => {
+    // Chrome stops continuous recognition on its own periodically even
+    // without an error — restart unless we've since woken up (Gemini owns
+    // the mic at that point) or were stopped intentionally (recognizer is
+    // nulled out by stopWakeWordListener() before calling .stop()).
+    if (!awake && recognizer) {
+      try { recognizer.start(); } catch (_) {}
+    }
+  };
+
+  try {
+    recognizer.start();
+  } catch (err) {
+    console.warn('[TernKonnect] Could not start wake word listener:', err.message);
+  }
+}
+
+function stopWakeWordListener() {
+  if (recognizer) {
+    const r = recognizer;
+    recognizer = null;
+    r.onend = null;
+    r.onerror = null;
+    r.onresult = null;
+    try { r.stop(); } catch (_) {}
+  }
+}
+
+async function wakeUp() {
+  if (awake) return;
+  awake = true;
+  stopWakeWordListener();
+  playFeedbackSound('chime_up');
+  resetWakeIdleTimer();
   await startMicrophone();
   connectToGemini();
+}
+
+// Proactively disconnects after a quiet period — well before the server's
+// own idle timeout — so a paused conversation doesn't quietly eat through a
+// capped session's minutes. Also the landing spot for any connection
+// failure: going back to "listening for the wake phrase" is always a safe,
+// non-error resting state.
+function goToSleep() {
+  awake = false;
+  clearWakeIdleTimer();
+  if (ws) {
+    suppressNextReconnect = true;
+    const oldWs = ws;
+    ws = null;
+    try { oldWs.close(); } catch (_) {}
+  }
+  stopMicrophone();
+  startWakeWordListener();
+}
+
+function resetWakeIdleTimer() {
+  lastWakeIdleResetAt = Date.now();
+  clearWakeIdleTimer();
+  wakeIdleTimer = setTimeout(() => {
+    console.log('[TernKonnect] Quiet for a while — going back to sleep to preserve session time.');
+    goToSleep();
+  }, WAKE_REARM_IDLE_SECONDS * 1000);
+}
+
+function clearWakeIdleTimer() {
+  if (wakeIdleTimer) {
+    clearTimeout(wakeIdleTimer);
+    wakeIdleTimer = null;
+  }
 }
 
 // Initial boot
@@ -235,6 +357,9 @@ async function startMicrophone() {
       // Cheaper and safer than full acoustic echo cancellation — avoids the
       // assistant hearing (and reacting to) its own voice through a speaker.
       if (isPlaying) return;
+      // Throttled — this handler fires far too often (per audio frame) to
+      // reset a timer on every call.
+      if (Date.now() - lastWakeIdleResetAt > 2000) resetWakeIdleTimer();
       const float32 = event.data;
       const int16 = float32ToInt16(float32);
       const b64 = bufferToBase64(int16.buffer);
@@ -300,9 +425,10 @@ async function connectToGemini() {
     speakFallback(err.trialExhausted ? err.message : 'Could not connect: ' + err.message);
     if (err.trialExhausted) {
       try { chrome.runtime.sendMessage({ type: 'set_session_state', state: { trialExhausted: true } }); } catch (_) {}
-    } else {
-      scheduleReconnect();
     }
+    // Either way, go back to listening for the wake phrase rather than
+    // silently retrying on a timer — the user can just summon it again.
+    goToSleep();
     return;
   }
 
@@ -348,12 +474,15 @@ function handleWsClose(event) {
   isConnecting = false;
   ws = null;
   clearTokenRefreshTimer();
-  updateWsStatus('disconnected');
   if (suppressNextReconnect) {
+    // Whoever closed us (goToSleep, restart_offscreen) is already handling
+    // the transition — don't fight over status or double-start the wake
+    // word listener.
     suppressNextReconnect = false;
     return;
   }
-  scheduleReconnect();
+  updateWsStatus('disconnected');
+  goToSleep();
 }
 
 function handleWsError(err) {
@@ -370,7 +499,9 @@ function handleControlMessage(msg) {
     case 'auth_failed':
       console.error('[TernKonnect] Auth failed:', msg.reason);
       speakFallback('Could not connect: ' + msg.reason + '. Please check your email and integration code in settings.');
-      suppressNextReconnect = true;
+      // Not suppressed — handleWsClose's goToSleep() puts us back to
+      // listening for the wake phrase, which is a safe resting state even
+      // though this particular attempt failed.
       if (ws) ws.close();
       break;
     case 'capacity_exceeded':
@@ -397,10 +528,10 @@ function handleControlMessage(msg) {
       break;
     case 'session_replaced':
       // A newer connection from this same account took over (e.g. the
-      // extension reconnected elsewhere). Don't fight back by retrying —
-      // that would just bounce the two connections off each other.
+      // extension reconnected elsewhere). Going back to wake-word listening
+      // (via handleWsClose -> goToSleep()) rather than immediately
+      // reconnecting avoids bouncing the two connections off each other.
       console.warn('[TernKonnect] Session replaced by a newer connection.');
-      suppressNextReconnect = true;
       if (ws) ws.close();
       break;
     default:
@@ -468,17 +599,13 @@ function clearTokenRefreshTimer() {
   }
 }
 
-function scheduleReconnect() {
-  if (reconnectTimer) clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(() => {
-    console.log('[TernKonnect] Reconnecting...');
-    connectToGemini();
-  }, 5000);
-}
-
 // ── Handle server messages ─────────────────────────────────────────────────────
 
 async function handleServerMessage(msg) {
+  // Any real activity from Gemini means the conversation is still going —
+  // push back the auto-sleep clock.
+  resetWakeIdleTimer();
+
   // Setup complete → Gemini will say the welcome message per system prompt
   if (msg.setupComplete !== undefined) {
     console.log('[TernKonnect] Setup complete');

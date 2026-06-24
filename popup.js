@@ -7,6 +7,7 @@ const connBadge   = document.getElementById('connBadge');
 const micBadge    = document.getElementById('micBadge');
 const radarCore   = document.getElementById('radarCore');
 const radarLabel  = document.getElementById('radarLabel');
+const wakePhraseTip = document.getElementById('wakePhraseTip');
 
 const settingsToggle = document.getElementById('settingsToggle');
 const settingsPanel  = document.getElementById('settingsPanel');
@@ -202,6 +203,10 @@ async function checkStatus() {
     chrome.tabs.create({ url: 'setup.html' });
   }
 
+  // Only relevant while actually dormant — the 'dormant' branch below turns
+  // it back on.
+  wakePhraseTip.style.display = 'none';
+
   if (!config) {
     warn.style.display = 'flex';
     trialExpiredView.style.display = 'none';
@@ -246,6 +251,27 @@ async function checkStatus() {
 
     if (micState === 'granted') {
       setBadge(micBadge, 'Ready', 'green');
+    } else if (micState === 'denied') {
+      setBadge(micBadge, 'Blocked (Click)', 'red');
+    } else {
+      setBadge(micBadge, 'Setup (Click)', 'yellow');
+    }
+    return;
+  }
+
+  // Resting state: not connected to Gemini, but actively listening for the
+  // wake phrase — this is normal and expected, not an error, so it gets its
+  // own calm styling rather than "Disconnected".
+  if (bgAlive && config.wsStatus === 'dormant') {
+    warn.style.display = 'none';
+    wakePhraseTip.style.display = 'block';
+    setBadge(connBadge, 'Ready', 'green');
+    radarCore.className = 'radar-core';
+    radarLabel.textContent = "Say \"Hey TernKonnect\"";
+    radarLabel.className = 'radar-label';
+
+    if (micState === 'granted') {
+      setBadge(micBadge, 'Listening', 'green');
     } else if (micState === 'denied') {
       setBadge(micBadge, 'Blocked (Click)', 'red');
     } else {
