@@ -54,7 +54,20 @@ export default {
     ],
     optionSelectors: ['input[type="radio"]', 'input[type="checkbox"]', '[role="radio"]', '[role="checkbox"]'],
     optionFallbackSelectors: ['.answer', '.option'],
-    questionTextSelectors: ['legend', '.question-text', 'h3', 'h4', 'p:first-of-type', '.qtext', '.question_text']
+    questionTextSelectors: ['legend', '.question-text', 'h3', 'h4', 'p:first-of-type', '.qtext', '.question_text'],
+    submitSelectors: [
+      'button[type="submit"]',
+      '[data-testid*="submit" i]',
+      '#submit_response_button', // edX
+      '#id_submitbutton',        // Moodle
+      '.submit_button'           // Canvas
+    ],
+    timerSelectors: [
+      '[class*="timer" i]',
+      '[class*="countdown" i]',
+      '[aria-label*="time remaining" i]',
+      '[data-testid*="timer" i]'
+    ]
   },
 
   video: {

@@ -411,46 +411,54 @@
       <button class="settings-btn" id="settingsToggle" title="Settings" aria-label="Open settings">⚙</button>
     </div>
 
-    <!-- ── Authentication Warning (hidden by default) ── -->
+    <!-- ── Not linked yet (every session, free or paid, needs email + code) ── -->
     <div id="apiWarning" class="warning" style="display:none">
       <span class="warn-icon">⚠</span>
-      <div><strong>Authentication Required</strong><br>Open settings (⚙) above and enter your Email and Integration Code, then click Save.</div>
+      <div><strong>Account Required</strong><br>Open settings (⚙) above and enter your Email and Integration Code, then click Save. New accounts get 3 free 5-minute sessions on the Starter plan.</div>
     </div>
 
-    <!-- ── Trial Expired View (shown when 3 trials are completed) ── -->
+    <!-- ── Free sessions used up (shown when the Starter plan's 3-session cap is hit) ── -->
     <div id="trialExpiredView" class="card" style="display:none; text-align: center; padding: 18px;">
       <span class="warn-icon" style="font-size: 28px; color: #f87171; display: block; margin-bottom: 8px;">⏳</span>
-      <h3 style="font-size: 15px; margin-bottom: 6px; color: #f87171; font-weight: 600;">Trial Sessions Expired</h3>
-      <p style="font-size: 11.5px; color: #8b8db0; margin-bottom: 16px; line-height: 1.5;">You have completed 3 trial sessions of 5 minutes each. Please enter your email and integration code to subscribe and continue.</p>
-      
-      <div style="text-align: left; margin-bottom: 12px;">
-        <label for="loginEmail" style="font-size: 11px; color: #8b8db0; display: block; margin-bottom: 4px;">Email Address</label>
-        <input type="email" id="loginEmail" class="key-input" placeholder="user@example.com" style="width: 100%; margin-bottom: 8px;" autocomplete="off" />
-        
-        <label for="loginCode" style="font-size: 11px; color: #8b8db0; display: block; margin-bottom: 4px;">Integration Code</label>
-        <input type="password" id="loginCode" class="key-input" placeholder="ACCESS-EXT-xxxxxx" style="width: 100%;" autocomplete="off" />
-      </div>
-      
-      <button class="btn btn-primary" id="loginSubmitBtn" style="width: 100%; padding: 10px;">Connect & Subscribe</button>
-      <div class="settings-msg" id="loginMsg" style="margin-top: 8px; min-height: 16px;"></div>
+      <h3 style="font-size: 15px; margin-bottom: 6px; color: #f87171; font-weight: 600;">Free Sessions Used Up</h3>
+      <p style="font-size: 11.5px; color: #8b8db0; margin-bottom: 16px; line-height: 1.5;">You've used all 3 free sessions on the Starter plan. Upgrade your plan to keep using TernConnect.</p>
+      <button class="btn btn-primary" id="upgradeBtn" style="width: 100%; padding: 10px; margin-bottom: 8px;">Upgrade Plan</button>
+      <button class="btn btn-ghost" id="retryAfterUpgradeBtn" style="width: 100%; padding: 10px;">I've Upgraded — Retry</button>
+      <div class="settings-msg" id="retryMsg" style="margin-top: 8px; min-height: 16px;"></div>
     </div>
 
     <!-- ── Settings Panel (collapsible) ── -->
     <div class="settings-panel" id="settingsPanel">
       <div class="card">
         <div class="settings-inner">
-          <label for="emailInput">Email</label>
-          <div class="key-input-wrap">
-            <input type="email" id="emailInput" class="key-input" placeholder="user@example.com" autocomplete="off" />
+          <!-- Shown once an account is linked — no need to re-show the form -->
+          <div id="integratedView" style="display:none">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">
+              <span style="color:#34d399; font-size:20px; flex-shrink:0;">✓</span>
+              <div>
+                <div style="font-size:12.5px; font-weight:600; color:#eff0f3;">Account Linked</div>
+                <div id="linkedEmailDisplay" style="font-size:11px; color:#8b8db0; margin-top:2px; word-break: break-all;"></div>
+              </div>
+            </div>
+            <button class="btn btn-ghost" id="changeAccountBtn" style="width:100%;">Change Account</button>
           </div>
-          <label for="pinInput">Integration Code</label>
-          <div class="key-input-wrap">
-            <input type="password" id="pinInput" class="key-input" placeholder="ACCESS-EXT-xxxxxx" autocomplete="off" />
+
+          <!-- Shown when not linked yet, or after clicking "Change Account" -->
+          <div id="credentialsForm">
+            <label for="emailInput">Email</label>
+            <div class="key-input-wrap">
+              <input type="email" id="emailInput" class="key-input" placeholder="user@example.com" autocomplete="off" />
+            </div>
+            <label for="pinInput">Integration Code</label>
+            <div class="key-input-wrap">
+              <input type="password" id="pinInput" class="key-input" placeholder="ACCESS-EXT-xxxxxx" autocomplete="off" />
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-primary" id="saveKeyBtn">Save</button>
+              <button class="btn btn-ghost" id="clearKeyBtn">Clear</button>
+            </div>
           </div>
-          <div class="btn-row">
-            <button class="btn btn-primary" id="saveKeyBtn">Save</button>
-            <button class="btn btn-ghost" id="clearKeyBtn">Clear</button>
-          </div>
+
           <div class="settings-msg" id="settingsMsg"></div>
         </div>
       </div>
@@ -469,10 +477,6 @@
 
     <!-- ── Status Card ── -->
     <div class="card">
-      <div class="row" id="trialRow" style="display:none">
-        <span class="label">Trial Session</span>
-        <span class="badge yellow" id="trialBadge"><span class="dot"></span>Trial 1 of 3</span>
-      </div>
       <div class="row">
         <span class="label">AI Connection</span>
         <span class="badge yellow" id="connBadge"><span class="dot"></span>Checking…</span>

@@ -26,6 +26,15 @@ async function ensureOffscreenDocument() {
   });
 }
 
+// Called after credentials change (save/clear) so the live connection picks
+// up the new email/integrationCode immediately, instead of only on the next
+// full browser restart (the offscreen document otherwise only calls boot()
+// once, when it's first created).
+async function restartOffscreenDocument() {
+  await ensureOffscreenDocument();
+  await chrome.runtime.sendMessage({ type: 'restart_offscreen' });
+}
+
 async function getChromeIdentityEmail() {
   return new Promise((resolve) => {
     try {
@@ -76,6 +85,47 @@ async function ensureProfileId() {
   }
 
   return { profileId, profileName, profileEmail };
+}
+
+// ── Intelligence backend session token ──────────────────────────────────────
+// digital-accessibility-intelligence gates its WebSocket on a short-lived JWT
+// minted by the Platform's /api/auth/session (reusing the same email +
+// integrationCode the user already entered for /chrome/integrate). Cached in
+// memory only — re-fetched from the Platform whenever it's near expiry.
+
+const PLATFORM_BASE_URL = 'http://localhost:9001';
+let cachedSessionToken = null;
+let cachedSessionExpiresAt = 0;
+
+async function getChromeSessionToken({ forceRefresh = false } = {}) {
+  const now = Date.now();
+  if (!forceRefresh && cachedSessionToken && now < cachedSessionExpiresAt - 60000) {
+    return cachedSessionToken;
+  }
+
+  const storage = await chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin']);
+  const email = storage.ternkonnectEmail;
+  const integrationCode = storage.ternkonnectCode || storage.ternkonnectPin;
+  if (!email || !integrationCode) {
+    throw new Error('No TernConnect account linked yet. Open settings and enter your email and integration code.');
+  }
+
+  const response = await fetch(`${PLATFORM_BASE_URL}/api/auth/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, integrationCode })
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const err = new Error(data.error || 'Failed to obtain a session token from the platform.');
+    err.trialExhausted = !!data.trialExhausted;
+    throw err;
+  }
+
+  cachedSessionToken = data.token;
+  cachedSessionExpiresAt = now + (data.expiresIn || 1800) * 1000;
+  return cachedSessionToken;
 }
 
 async function trackCheckIn(eventType = 'checkin') {
@@ -197,42 +247,29 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'get_config') {
+    // No anonymous mode anymore — every session (trial or paid) requires a
+    // linked email + integrationCode. "Trial" is just the Starter plan's
+    // capped limits, enforced server-side by the Platform's /api/auth/session.
     Promise.all([
       chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId', 'chromeProfileName']),
-      chrome.storage.session.get('wsStatus'),
-      checkOrStartTrial()
-    ]).then(([storage, session, trialInfo]) => {
+      chrome.storage.session.get(['wsStatus', 'trialExhausted'])
+    ]).then(([storage, session]) => {
       const email = storage.ternkonnectEmail;
       const code = storage.ternkonnectCode || storage.ternkonnectPin;
       const profileId = storage.chromeProfileId;
       const profileName = storage.chromeProfileName;
       const wsStatus = session?.wsStatus || 'disconnected';
 
-      if (email && code) {
-        sendResponse({
-          email,
-          integrationCode: code,
-          trial: false,
-          profileId,
-          profileName,
-          wsStatus
-        });
-      } else {
-        sendResponse({
-          email: trialInfo.trialExpired ? null : `trial-${profileId}`,
-          integrationCode: trialInfo.trialExpired ? null : 'TRIAL',
-          trial: !trialInfo.trialExpired,
-          trialExpired: trialInfo.trialExpired,
-          trialsCount: trialInfo.trialsCount,
-          trialActive: trialInfo.trialActive,
-          trialStartTimestamp: trialInfo.trialStartTimestamp,
-          remainingTime: trialInfo.trialActive ? Math.max(0, 5 * 60 * 1000 - (Date.now() - trialInfo.trialStartTimestamp)) : 0,
-          profileId,
-          profileName,
-          wsStatus
-        });
-      }
-    }).catch(() => sendResponse({ email: null, integrationCode: null, wsStatus: 'disconnected' }));
+      sendResponse({
+        email: email || null,
+        integrationCode: code || null,
+        linked: !!(email && code),
+        trialExhausted: !!session?.trialExhausted,
+        profileId,
+        profileName,
+        wsStatus
+      });
+    }).catch(() => sendResponse({ email: null, integrationCode: null, linked: false, trialExhausted: false, wsStatus: 'disconnected' }));
     return true;
   }
 
@@ -273,8 +310,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === 'log_profile_activity') {
     const { actionType, description, metadata } = message;
-    chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId', 'trialActive']).then((storage) => {
-      const code = storage.ternkonnectCode || storage.ternkonnectPin || (storage.trialActive ? 'TRIAL' : 'inactive');
+    chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId']).then((storage) => {
+      const code = storage.ternkonnectCode || storage.ternkonnectPin || 'inactive';
       const profileId = storage.chromeProfileId;
 
       fetch('http://localhost:9001/api/platform/chrome/log-activity', {
@@ -294,6 +331,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'get_chrome_session_token') {
+    getChromeSessionToken({ forceRefresh: !!message.forceRefresh })
+      .then(token => sendResponse({ token }))
+      .catch(err => sendResponse({ error: err.message, trialExhausted: !!err.trialExhausted }));
+    return true;
+  }
+
   if (message.type === 'get_session_state') {
     chrome.storage.session.get('hasWelcomed').then(res => sendResponse({ hasWelcomed: !!res.hasWelcomed })).catch(() => sendResponse({ hasWelcomed: false }));
     return true;
@@ -304,39 +348,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 });
-
-async function checkOrStartTrial() {
-  const data = await chrome.storage.local.get(['trialsCount', 'trialActive', 'trialStartTimestamp']);
-  let trialsCount = data.trialsCount || 0;
-  let trialActive = data.trialActive || false;
-  let trialStartTimestamp = data.trialStartTimestamp || 0;
-
-  const now = Date.now();
-  const trialDuration = 5 * 60 * 1000; // 5 minutes
-
-  if (trialActive) {
-    const elapsed = now - trialStartTimestamp;
-    if (elapsed >= trialDuration) {
-      trialActive = false;
-      await chrome.storage.local.set({ trialActive });
-    }
-  }
-
-  // If not active, can we start a new one?
-  if (!trialActive && trialsCount < 3) {
-    trialsCount += 1;
-    trialActive = true;
-    trialStartTimestamp = now;
-    await chrome.storage.local.set({ trialsCount, trialActive, trialStartTimestamp });
-  }
-
-  return {
-    trialsCount,
-    trialActive,
-    trialStartTimestamp,
-    trialExpired: trialsCount >= 3 && !trialActive
-  };
-}
 
 // ── Tool implementations ───────────────────────────────────────────────────────
 
@@ -363,6 +374,14 @@ async function executeTool(name, args) {
     case 'click_lms_item':       return clickLmsItem(args.index);
     case 'get_quiz_details':     return getQuizDetails();
     case 'answer_quiz':          return answerQuiz(args.question_index, args.option_index);
+    case 'get_quiz_timer':       return getQuizTimer();
+    case 'submit_quiz':          return submitQuiz();
+    // ── v3 additions ──
+    case 'get_orientation':      return getOrientation();
+    case 'dismiss_overlay':      return dismissOverlay();
+    case 'keyboard_navigate':    return keyboardNavigate(args.keys || []);
+    case 'select_option':        return selectOption(args.field_identifier, args.value);
+    case 'type_rich_text':       return typeRichText(args.text, args.format || 'plain');
     default:
       return { error: `Unknown tool: ${name}` };
   }
@@ -438,7 +457,7 @@ async function goForward() {
 // ── DOM: Click ─────────────────────────────────────────────────────────────────
 
 async function clickElement(elementText, elementType) {
-  return runInTab((text, type) => {
+  return runInTab(async (text, type) => {
     const lower = text.toLowerCase().trim();
 
     const selectors = {
@@ -447,15 +466,28 @@ async function clickElement(elementText, elementType) {
       any:    'button, input[type="button"], input[type="submit"], [role="button"], a[href], [role="link"], [tabindex="0"]'
     };
 
-    const candidates = Array.from(document.querySelectorAll(selectors[type] || selectors.any));
+    // Pierces shadow roots — custom-element-heavy LMS widgets (e.g. some
+    // Coursera/Udemy components) render real interactive elements inside one.
+    function deepQueryAll(root, selector) {
+      const found = Array.from(root.querySelectorAll(selector));
+      const allEls = root.querySelectorAll('*');
+      for (const el of allEls) {
+        if (el.shadowRoot) found.push(...deepQueryAll(el.shadowRoot, selector));
+      }
+      return found;
+    }
 
-    if (type === 'any') {
-      const extraCandidates = Array.from(document.querySelectorAll('div, span, li, img, summary')).filter(el => {
-        if (el.hasAttribute('onclick')) return true;
-        const style = window.getComputedStyle(el);
-        return style.cursor === 'pointer';
-      });
-      candidates.push(...extraCandidates);
+    function findCandidates() {
+      const candidates = deepQueryAll(document, selectors[type] || selectors.any);
+      if (type === 'any') {
+        const extraCandidates = deepQueryAll(document, 'div, span, li, img, summary').filter(el => {
+          if (el.hasAttribute('onclick')) return true;
+          const style = window.getComputedStyle(el);
+          return style.cursor === 'pointer';
+        });
+        candidates.push(...extraCandidates);
+      }
+      return candidates;
     }
 
     function score(el) {
@@ -472,10 +504,18 @@ async function clickElement(elementText, elementType) {
       return 0;
     }
 
-    const sorted = candidates
-      .map(el => ({ el, s: score(el) }))
-      .filter(({ s }) => s > 0)
-      .sort((a, b) => b.s - a.s);
+    // Short retry loop: elements that render asynchronously after a click or
+    // navigation (React/Vue re-renders, lazy-loaded widgets) often aren't in
+    // the DOM yet on the first pass.
+    let sorted = [];
+    for (let attempt = 0; attempt < 4; attempt++) {
+      sorted = findCandidates()
+        .map(el => ({ el, s: score(el) }))
+        .filter(({ s }) => s > 0)
+        .sort((a, b) => b.s - a.s);
+      if (sorted.length > 0) break;
+      await new Promise((r) => setTimeout(r, 350));
+    }
 
     if (sorted.length === 0) {
       return { success: false, message: `No element found matching: "${text}"` };
@@ -494,7 +534,7 @@ async function clickElement(elementText, elementType) {
 // ── DOM: Form filling ──────────────────────────────────────────────────────────
 
 async function fillFormField(fieldIdentifier, value) {
-  return runInTab((identifier, val) => {
+  return runInTab(async (identifier, val) => {
     const lower = identifier.toLowerCase().trim();
 
     function labelOf(el) {
@@ -512,9 +552,14 @@ async function fillFormField(fieldIdentifier, value) {
       return '';
     }
 
-    const inputs = Array.from(
-      document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select, [contenteditable="true"]')
-    );
+    function deepQueryAll(root, selector) {
+      const found = Array.from(root.querySelectorAll(selector));
+      const allEls = root.querySelectorAll('*');
+      for (const el of allEls) {
+        if (el.shadowRoot) found.push(...deepQueryAll(el.shadowRoot, selector));
+      }
+      return found;
+    }
 
     function score(el) {
       const combined = [
@@ -535,10 +580,19 @@ async function fillFormField(fieldIdentifier, value) {
       return 0;
     }
 
-    const ranked = inputs
-      .map(el => ({ el, s: score(el) }))
-      .filter(({ s }) => s > 0)
-      .sort((a, b) => b.s - a.s);
+    let ranked = [];
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const inputs = deepQueryAll(
+        document,
+        'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select, [contenteditable="true"]'
+      );
+      ranked = inputs
+        .map(el => ({ el, s: score(el) }))
+        .filter(({ s }) => s > 0)
+        .sort((a, b) => b.s - a.s);
+      if (ranked.length > 0) break;
+      await new Promise((r) => setTimeout(r, 350));
+    }
 
     if (ranked.length === 0) {
       return { success: false, message: `Field not found: "${identifier}"` };
@@ -782,4 +836,187 @@ async function answerQuiz(questionIndex, optionIndex) {
   const tab = await getActiveTab();
   const config = getSelectors(tab.url, 'quiz');
   return runInTab(quizPageScript, [config, 'select', questionIndex, optionIndex]);
+}
+
+async function getQuizTimer() {
+  const tab = await getActiveTab();
+  const config = getSelectors(tab.url, 'quiz');
+  return runInTab(quizPageScript, [config, 'timer']);
+}
+
+async function submitQuiz() {
+  const tab = await getActiveTab();
+  const config = getSelectors(tab.url, 'quiz');
+  return runInTab(quizPageScript, [config, 'submit']);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  V3 ADDITIONS: orientation, overlays, keyboard fallback, dropdowns, rich text
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Orientation: combines page info + LMS outline into one spoken-ready summary ──
+
+async function getOrientation() {
+  const tab = await getActiveTab();
+  if (!tab) return { success: false, message: 'No active tab' };
+
+  const pageInfo = await getCurrentPageInfo().catch(() => null);
+  const outline = await getLmsOutline().catch(() => null);
+
+  const nextItems = (outline?.success && outline.itemCount > 0)
+    ? outline.items.filter(i => !i.completed).slice(0, 3).map(i => i.title)
+    : [];
+
+  return {
+    success: true,
+    url: pageInfo?.url,
+    title: pageInfo?.title,
+    headings: pageInfo?.headings,
+    courseItemCount: outline?.itemCount || 0,
+    suggestedNextItems: nextItems
+  };
+}
+
+// ── Overlay dismissal: cookie banners, modals, popups ──────────────────────────
+
+async function dismissOverlay() {
+  return runInTab(() => {
+    const clickIfFound = (selector) => {
+      const el = document.querySelector(selector);
+      if (el) { el.click(); return el; }
+      return null;
+    };
+
+    let target =
+      clickIfFound('[aria-label*="close" i]') ||
+      clickIfFound('[aria-label*="dismiss" i]') ||
+      clickIfFound('.modal-close, .banner-close, .cookie-close');
+
+    if (!target) {
+      const candidates = Array.from(document.querySelectorAll('button, [role="button"], a'));
+      const textMatch = candidates.find((el) =>
+        /^(accept|reject all|close|got it|no thanks|dismiss|i agree)$/i.test((el.textContent || '').trim())
+      );
+      if (textMatch) { textMatch.click(); target = textMatch; }
+    }
+
+    if (!target) {
+      const dialog = document.querySelector('[role="dialog"], .modal, [class*="overlay" i]');
+      const xButton = dialog?.querySelector('button, [role="button"]');
+      if (xButton && /×|close|x/i.test((xButton.textContent || xButton.getAttribute('aria-label') || '').trim())) {
+        xButton.click();
+        target = xButton;
+      }
+    }
+
+    if (!target) {
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return { success: true, via: 'Escape key (best effort — no explicit close control found)' };
+    }
+
+    return { success: true, via: 'matched close/accept/dismiss control' };
+  });
+}
+
+// ── Keyboard fallback: sequential key presses for cross-origin iframes, custom widgets ──
+
+async function keyboardNavigate(keys) {
+  return runInTab((keySequence) => {
+    function parseKey(raw) {
+      const parts = raw.split('+');
+      const key = parts.pop();
+      return {
+        key,
+        shiftKey: parts.includes('Shift'),
+        ctrlKey: parts.includes('Ctrl') || parts.includes('Control'),
+        altKey: parts.includes('Alt'),
+        metaKey: parts.includes('Meta')
+      };
+    }
+
+    for (const raw of keySequence) {
+      const opts = { ...parseKey(raw), bubbles: true, cancelable: true };
+      const active = document.activeElement || document.body;
+      active.dispatchEvent(new KeyboardEvent('keydown', opts));
+      active.dispatchEvent(new KeyboardEvent('keypress', opts));
+      // Character keys also need a real input event for controlled React/Vue fields.
+      if (opts.key.length === 1 && active && 'value' in active) {
+        active.value = (active.value || '') + opts.key;
+        active.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      active.dispatchEvent(new KeyboardEvent('keyup', opts));
+    }
+
+    return { success: true, keysPressed: keySequence.length };
+  }, [keys]);
+}
+
+// ── Dropdown / <select> ─────────────────────────────────────────────────────────
+
+async function selectOption(fieldIdentifier, value) {
+  return runInTab((identifier, val) => {
+    const lower = (identifier || '').toLowerCase().trim();
+
+    function labelOf(el) {
+      const byId = el.id ? document.querySelector(`label[for="${el.id}"]`) : null;
+      if (byId) return byId.textContent;
+      const aria = el.getAttribute('aria-label');
+      return aria || '';
+    }
+
+    const selects = Array.from(document.querySelectorAll('select'));
+    function score(el) {
+      const combined = [labelOf(el), el.name || '', el.id || ''].join(' ').toLowerCase();
+      if (combined === lower) return 3;
+      if (combined.includes(lower)) return 2;
+      return lower ? 0 : 1;
+    }
+
+    const ranked = selects.map(el => ({ el, s: score(el) })).filter(({ s }) => s > 0).sort((a, b) => b.s - a.s);
+    if (ranked.length === 0) {
+      return { success: false, message: `Dropdown not found: "${identifier}"` };
+    }
+
+    const target = ranked[0].el;
+    const options = Array.from(target.options);
+    const match = options.find(o => o.value === val) ||
+      options.find(o => o.textContent.trim().toLowerCase() === val.toLowerCase()) ||
+      options.find(o => o.textContent.trim().toLowerCase().includes(val.toLowerCase()));
+
+    if (!match) {
+      return { success: false, message: `Option "${val}" not found in dropdown "${identifier}"` };
+    }
+
+    target.value = match.value;
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+    return { success: true, selected: match.textContent.trim() };
+  }, [fieldIdentifier, value]);
+}
+
+// ── Rich text editors: TinyMCE, CKEditor, Quill, contenteditable ────────────────
+
+async function typeRichText(text, format) {
+  return runInTab((val, fmt) => {
+    const editor = document.querySelector(
+      '[contenteditable="true"], .ql-editor, .mce-content-body, .cke_editable'
+    );
+    if (!editor) {
+      return { success: false, message: 'No rich text editor found on this page.' };
+    }
+
+    editor.focus();
+    document.execCommand('selectAll', false, null);
+    document.execCommand('insertText', false, val);
+
+    if (fmt && fmt !== 'plain') {
+      const formatCommand = { bold: 'bold', italic: 'italic', heading: 'formatBlock' }[fmt];
+      if (formatCommand) {
+        document.execCommand('selectAll', false, null);
+        document.execCommand(formatCommand, false, formatCommand === 'formatBlock' ? 'H2' : null);
+      }
+    }
+
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    return { success: true };
+  }, [text, format]);
 }

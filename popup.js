@@ -16,16 +16,22 @@ const saveKeyBtn     = document.getElementById('saveKeyBtn');
 const clearKeyBtn    = document.getElementById('clearKeyBtn');
 const settingsMsg    = document.getElementById('settingsMsg');
 
-// Trial expired panel
-const trialExpiredView = document.getElementById('trialExpiredView');
-const loginEmail       = document.getElementById('loginEmail');
-const loginCode        = document.getElementById('loginCode');
-const loginSubmitBtn   = document.getElementById('loginSubmitBtn');
-const loginMsg          = document.getElementById('loginMsg');
+const integratedView    = document.getElementById('integratedView');
+const linkedEmailDisplay = document.getElementById('linkedEmailDisplay');
+const changeAccountBtn  = document.getElementById('changeAccountBtn');
+const credentialsForm   = document.getElementById('credentialsForm');
 
-// Trial status card row
-const trialRow   = document.getElementById('trialRow');
-const trialBadge = document.getElementById('trialBadge');
+// Once linked, the settings panel shows a confirmation instead of the raw
+// form. "Change Account" forces the form back open until the next save.
+let forceShowCredentialsForm = false;
+
+// Free-sessions-exhausted panel (Starter plan's 3-session cap)
+const trialExpiredView  = document.getElementById('trialExpiredView');
+const upgradeBtn        = document.getElementById('upgradeBtn');
+const retryAfterUpgradeBtn = document.getElementById('retryAfterUpgradeBtn');
+const retryMsg          = document.getElementById('retryMsg');
+
+const PLATFORM_DASHBOARD_URL = 'http://localhost:3000/dashboard/billing';
 
 let autoOpenedSetup = false;
 
@@ -35,22 +41,44 @@ settingsToggle.addEventListener('click', () => {
   const isOpen = settingsPanel.classList.toggle('open');
   settingsToggle.classList.toggle('active', isOpen);
 
-  // When opening, load the current saved auth
-  if (isOpen) loadSavedAuth();
+  // Re-opening always defaults back to the confirmation view (if linked)
+  // rather than whatever edit state was left over from last time.
+  if (isOpen) {
+    forceShowCredentialsForm = false;
+    loadSavedAuth();
+  }
+});
+
+changeAccountBtn.addEventListener('click', () => {
+  forceShowCredentialsForm = true;
+  loadSavedAuth();
 });
 
 async function loadSavedAuth() {
   try {
     const result = await chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin']);
     const code = result.ternkonnectCode || result.ternkonnectPin;
-    if (result.ternkonnectEmail && code) {
+    const linked = !!(result.ternkonnectEmail && code);
+
+    if (linked) {
       emailInput.value = result.ternkonnectEmail;
       pinInput.value = code;
     } else {
       emailInput.value = '';
       pinInput.value = '';
     }
-  } catch (_) {}
+
+    renderSettingsPanel(linked, result.ternkonnectEmail);
+  } catch (_) {
+    renderSettingsPanel(false);
+  }
+}
+
+function renderSettingsPanel(linked, email) {
+  const showForm = !linked || forceShowCredentialsForm;
+  credentialsForm.style.display = showForm ? 'block' : 'none';
+  integratedView.style.display = !showForm ? 'block' : 'none';
+  if (!showForm) linkedEmailDisplay.textContent = email || '';
 }
 
 // ── Save auth ──────────────────────────────────────────────────
@@ -80,6 +108,8 @@ saveKeyBtn.addEventListener('click', async () => {
 
     if (response && response.success) {
       showMsg('✓ Integrated successfully!', false);
+      forceShowCredentialsForm = false;
+      renderSettingsPanel(true, email);
       try { chrome.runtime.sendMessage({ type: 'reload_config' }); } catch (_) {}
       setTimeout(checkStatus, 2000);
     } else {
@@ -97,6 +127,8 @@ clearKeyBtn.addEventListener('click', async () => {
     await chrome.storage.local.remove(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin']);
     emailInput.value = '';
     pinInput.value = '';
+    forceShowCredentialsForm = false;
+    renderSettingsPanel(false);
     showMsg('Credentials cleared.', false);
     try { chrome.runtime.sendMessage({ type: 'reload_config' }); } catch (_) {}
     setTimeout(checkStatus, 1000);
@@ -105,48 +137,33 @@ clearKeyBtn.addEventListener('click', async () => {
   }
 });
 
-// ── Login Submit (Trial expired view) ──────────────────────────
+// ── Upgrade (shown once the Starter plan's 3 free sessions are used up) ──
+// The session cap lives on the Subscription record itself, so re-entering
+// the same email + integration code can't lift it — only an actual plan
+// upgrade on the web dashboard does.
 
-loginSubmitBtn.addEventListener('click', async () => {
-  const email = loginEmail.value.trim();
-  const code = loginCode.value.trim();
+upgradeBtn.addEventListener('click', () => {
+  chrome.tabs.create({ url: PLATFORM_DASHBOARD_URL });
+});
 
-  if (!email || !code) {
-    showLoginMsg('Enter both Email and Integration Code.', true);
-    return;
-  }
-
-  if (!email.includes('@')) {
-    showLoginMsg('Please enter a valid email address.', true);
-    return;
-  }
-
-  loginSubmitBtn.disabled = true;
-  showLoginMsg('Connecting to platform...', false);
+// After upgrading on the dashboard, nothing automatically tells the
+// extension to try again — the offscreen document only attempts a fresh
+// /api/auth/session call when explicitly restarted. This re-triggers that,
+// the same restart path used after saving new credentials.
+retryAfterUpgradeBtn.addEventListener('click', async () => {
+  retryAfterUpgradeBtn.disabled = true;
+  retryMsg.textContent = 'Checking your plan...';
+  retryMsg.className = 'settings-msg';
 
   try {
-    const response = await chrome.runtime.sendMessage({
-      type: 'integrate_profile',
-      email,
-      integrationCode: code
-    });
+    await chrome.runtime.sendMessage({ type: 'reload_config' });
+  } catch (_) {}
 
-    if (response && response.success) {
-      showLoginMsg('✓ Integrated successfully!', false);
-      try { chrome.runtime.sendMessage({ type: 'reload_config' }); } catch (_) {}
-      setTimeout(() => {
-        trialExpiredView.style.display = 'none';
-        loginSubmitBtn.disabled = false;
-        checkStatus();
-      }, 1500);
-    } else {
-      showLoginMsg(response?.error || 'Integration failed.', true);
-      loginSubmitBtn.disabled = false;
-    }
-  } catch (err) {
-    showLoginMsg('Cannot reach background helper.', true);
-    loginSubmitBtn.disabled = false;
-  }
+  setTimeout(() => {
+    retryAfterUpgradeBtn.disabled = false;
+    retryMsg.textContent = '';
+    checkStatus();
+  }, 2500);
 });
 
 function showMsg(text, isError) {
@@ -154,14 +171,6 @@ function showMsg(text, isError) {
   settingsMsg.className = 'settings-msg' + (isError ? ' error' : '');
   setTimeout(() => {
     if (settingsMsg.textContent === text) settingsMsg.textContent = '';
-  }, 5000);
-}
-
-function showLoginMsg(text, isError) {
-  loginMsg.textContent = text;
-  loginMsg.className = 'settings-msg' + (isError ? ' error' : '');
-  setTimeout(() => {
-    if (loginMsg.textContent === text) loginMsg.textContent = '';
   }, 5000);
 }
 
@@ -196,7 +205,6 @@ async function checkStatus() {
   if (!config) {
     warn.style.display = 'flex';
     trialExpiredView.style.display = 'none';
-    trialRow.style.display = 'none';
     setBadge(connBadge, 'Offline', 'red');
     radarCore.className = 'radar-core error';
     radarLabel.textContent = 'Service Error';
@@ -204,13 +212,13 @@ async function checkStatus() {
     return;
   }
 
-  // Handle Trial Expired state
-  if (config.trialExpired) {
+  // Used up the Starter plan's 3 free sessions — only an actual upgrade
+  // (not re-entering the same code) lifts this, since the cap lives on the
+  // Subscription record server-side.
+  if (config.trialExhausted) {
     warn.style.display = 'none';
     trialExpiredView.style.display = 'block';
-    trialRow.style.display = 'flex';
-    setBadge(trialBadge, 'Expired', 'red');
-    setBadge(connBadge, 'Subscribe to Continue', 'red');
+    setBadge(connBadge, 'Upgrade Required', 'red');
 
     if (micState === 'granted') {
       setBadge(micBadge, 'Ready', 'green');
@@ -221,124 +229,82 @@ async function checkStatus() {
     }
 
     radarCore.className = 'radar-core error';
-    radarLabel.textContent = 'Trial Expired';
+    radarLabel.textContent = 'Sessions Used Up';
     radarLabel.className = 'radar-label error';
     return;
   }
-
-  // If we get here, trial is not expired. Hide the trial expired view.
   trialExpiredView.style.display = 'none';
 
-  if (config.trial) {
-    // Active trial
-    warn.style.display = 'none';
-    trialRow.style.display = 'flex';
+  // Every session — free Starter-plan or paid — now requires a linked
+  // email + integration code. There's no anonymous fallback.
+  if (!config.linked) {
+    warn.style.display = 'flex';
+    setBadge(connBadge, 'Not Linked', 'red');
+    radarCore.className = 'radar-core error';
+    radarLabel.textContent = 'Enter Email + Code';
+    radarLabel.className = 'radar-label error';
 
-    // Format remaining time (minutes and seconds)
-    const mins = Math.floor(config.remainingTime / 60000);
-    const secs = Math.floor((config.remainingTime % 60000) / 1000);
-    const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
-
-    setBadge(trialBadge, `Session ${config.trialsCount}/3 (${timeStr})`, 'yellow');
-
-    if (bgAlive && config.wsStatus === 'connected') {
-      setBadge(connBadge, 'Connected (Trial)', 'green');
-
-      if (micState === 'granted') {
-        setBadge(micBadge, 'Active', 'green');
-        radarCore.className = 'radar-core listening';
-        radarLabel.textContent = 'Listening…';
-        radarLabel.className = 'radar-label active';
-      } else if (micState === 'denied') {
-        setBadge(micBadge, 'Blocked (Click)', 'red');
-        radarCore.className = 'radar-core error';
-        radarLabel.textContent = 'Mic Blocked';
-        radarLabel.className = 'radar-label error';
-      } else {
-        setBadge(micBadge, 'Setup (Click)', 'yellow');
-        radarCore.className = 'radar-core';
-        radarLabel.textContent = 'Mic Setup Needed';
-        radarLabel.className = 'radar-label';
-      }
-    } else if (bgAlive && config.wsStatus === 'connecting') {
-      setBadge(connBadge, 'Connecting…', 'yellow');
-      radarCore.className = 'radar-core';
-      radarLabel.textContent = 'Connecting…';
-      radarLabel.className = 'radar-label';
-
-      if (micState === 'granted') {
-        setBadge(micBadge, 'Ready', 'green');
-      } else if (micState === 'denied') {
-        setBadge(micBadge, 'Blocked (Click)', 'red');
-      } else {
-        setBadge(micBadge, 'Setup (Click)', 'yellow');
-      }
+    if (micState === 'granted') {
+      setBadge(micBadge, 'Ready', 'green');
+    } else if (micState === 'denied') {
+      setBadge(micBadge, 'Blocked (Click)', 'red');
     } else {
-      setBadge(connBadge, 'Disconnected', 'red');
-      radarCore.className = 'radar-core error';
-      radarLabel.textContent = 'Offline';
-      radarLabel.className = 'radar-label error';
+      setBadge(micBadge, 'Setup (Click)', 'yellow');
+    }
+    return;
+  }
 
-      if (micState === 'granted') {
-        setBadge(micBadge, 'Ready', 'green');
-      } else if (micState === 'denied') {
-        setBadge(micBadge, 'Blocked (Click)', 'red');
-      } else {
-        setBadge(micBadge, 'Setup (Click)', 'yellow');
-      }
+  if (bgAlive && config.wsStatus === 'connected') {
+    warn.style.display = 'none';
+    setBadge(connBadge, 'Connected', 'green');
+
+    if (micState === 'granted') {
+      setBadge(micBadge, 'Active', 'green');
+      radarCore.className = 'radar-core listening';
+      radarLabel.textContent = 'Listening…';
+      radarLabel.className = 'radar-label active';
+    } else if (micState === 'denied') {
+      setBadge(micBadge, 'Blocked (Click)', 'red');
+      radarCore.className = 'radar-core error';
+      radarLabel.textContent = 'Mic Blocked';
+      radarLabel.className = 'radar-label error';
+    } else {
+      setBadge(micBadge, 'Setup (Click)', 'yellow');
+      radarCore.className = 'radar-core';
+      radarLabel.textContent = 'Mic Setup Needed';
+      radarLabel.className = 'radar-label';
+    }
+  } else if (bgAlive && config.wsStatus === 'connecting') {
+    warn.style.display = 'none';
+    setBadge(connBadge, 'Connecting…', 'yellow');
+    radarCore.className = 'radar-core';
+    radarLabel.textContent = 'Connecting…';
+    radarLabel.className = 'radar-label';
+
+    if (micState === 'granted') {
+      setBadge(micBadge, 'Ready', 'green');
+    } else if (micState === 'denied') {
+      setBadge(micBadge, 'Blocked (Click)', 'red');
+    } else {
+      setBadge(micBadge, 'Setup (Click)', 'yellow');
     }
   } else {
-    // Authenticated
-    trialRow.style.display = 'none';
+    // No credentials-related warning here — `!config.linked` already
+    // returned earlier with that message. This branch only means the
+    // already-linked account's connection is down (backend restarting,
+    // network blip, etc.), which is a different problem.
+    warn.style.display = 'none';
+    setBadge(connBadge, 'Disconnected', 'red');
+    radarCore.className = 'radar-core error';
+    radarLabel.textContent = 'Offline';
+    radarLabel.className = 'radar-label error';
 
-    if (bgAlive && config.wsStatus === 'connected') {
-      warn.style.display = 'none';
-      setBadge(connBadge, 'Connected', 'green');
-
-      if (micState === 'granted') {
-        setBadge(micBadge, 'Active', 'green');
-        radarCore.className = 'radar-core listening';
-        radarLabel.textContent = 'Listening…';
-        radarLabel.className = 'radar-label active';
-      } else if (micState === 'denied') {
-        setBadge(micBadge, 'Blocked (Click)', 'red');
-        radarCore.className = 'radar-core error';
-        radarLabel.textContent = 'Mic Blocked';
-        radarLabel.className = 'radar-label error';
-      } else {
-        setBadge(micBadge, 'Setup (Click)', 'yellow');
-        radarCore.className = 'radar-core';
-        radarLabel.textContent = 'Mic Setup Needed';
-        radarLabel.className = 'radar-label';
-      }
-    } else if (bgAlive && config.wsStatus === 'connecting') {
-      warn.style.display = 'none';
-      setBadge(connBadge, 'Connecting…', 'yellow');
-      radarCore.className = 'radar-core';
-      radarLabel.textContent = 'Connecting…';
-      radarLabel.className = 'radar-label';
-
-      if (micState === 'granted') {
-        setBadge(micBadge, 'Ready', 'green');
-      } else if (micState === 'denied') {
-        setBadge(micBadge, 'Blocked (Click)', 'red');
-      } else {
-        setBadge(micBadge, 'Setup (Click)', 'yellow');
-      }
+    if (micState === 'granted') {
+      setBadge(micBadge, 'Ready', 'green');
+    } else if (micState === 'denied') {
+      setBadge(micBadge, 'Blocked (Click)', 'red');
     } else {
-      warn.style.display = 'flex';
-      setBadge(connBadge, 'Disconnected', 'red');
-      radarCore.className = 'radar-core error';
-      radarLabel.textContent = 'Offline';
-      radarLabel.className = 'radar-label error';
-
-      if (micState === 'granted') {
-        setBadge(micBadge, 'Ready', 'green');
-      } else if (micState === 'denied') {
-        setBadge(micBadge, 'Blocked (Click)', 'red');
-      } else {
-        setBadge(micBadge, 'Setup (Click)', 'yellow');
-      }
+      setBadge(micBadge, 'Setup (Click)', 'yellow');
     }
   }
 }

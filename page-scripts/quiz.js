@@ -91,5 +91,34 @@ export function quizPageScript(config, action, questionIndex, optionIndex) {
     return { success: true, questionIndex, optionIndex, selectedLabel: chosenLabel.slice(0, 200) };
   }
 
+  if (action === 'submit') {
+    const selector = (config.submitSelectors || []).join(', ');
+    const btn = selector ? document.querySelector(selector) : null;
+    if (btn) {
+      btn.click();
+      return { success: true, via: 'submit button' };
+    }
+    // Fallback: a button whose visible text looks like a submit action.
+    const candidates = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]'));
+    const textMatch = candidates.find((el) => /submit|finish/i.test((el.textContent || el.value || '').trim()));
+    if (textMatch) {
+      textMatch.click();
+      return { success: true, via: 'text-matched button' };
+    }
+    return { success: false, message: 'No submit button found on this quiz page.' };
+  }
+
+  if (action === 'timer') {
+    const selector = (config.timerSelectors || []).join(', ');
+    const els = selector ? document.querySelectorAll(selector) : [];
+    for (const el of els) {
+      const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text && /\d/.test(text)) {
+        return { success: true, found: true, timerText: text.slice(0, 100) };
+      }
+    }
+    return { success: true, found: false, message: 'No timer found on this page — likely an untimed quiz.' };
+  }
+
   return { success: false, message: `Unknown quiz action: ${action}` };
 }
