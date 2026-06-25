@@ -508,15 +508,17 @@ async function clickElement(elementText, elementType) {
 
     function findCandidates() {
       const candidates = deepQueryAll(document, selectors[type] || selectors.any);
-      if (type === 'any') {
-        const extraCandidates = deepQueryAll(document, 'div, span, li, img, summary').filter(el => {
-          if (el.hasAttribute('onclick')) return true;
-          const style = window.getComputedStyle(el);
-          return style.cursor === 'pointer';
-        });
-        candidates.push(...extraCandidates);
+      if (type !== 'any') {
+        candidates.push(...deepQueryAll(document, selectors.any));
       }
-      return candidates;
+      const extraCandidates = deepQueryAll(document, 'div, span, li, img, summary, article, section').filter(el => {
+        if (el.hasAttribute('onclick')) return true;
+        try {
+          return window.getComputedStyle(el).cursor === 'pointer';
+        } catch(e) { return false; }
+      });
+      candidates.push(...extraCandidates);
+      return Array.from(new Set(candidates));
     }
 
     function score(el) {
@@ -527,9 +529,19 @@ async function clickElement(elementText, elementType) {
         (el.title || '') + ' ' +
         (el.getAttribute('placeholder') || '')
       ).toLowerCase().trim();
-      if (txt === lower) return 3;
-      if (txt.startsWith(lower)) return 2;
-      if (txt.includes(lower)) return 1;
+      
+      if (txt === lower) return 5;
+      if (txt.startsWith(lower)) return 4;
+      if (txt.includes(lower)) return 3;
+      
+      const ignore = new Set(['the', 'and', 'for', 'with', 'this', 'that', 'course', 'video', 'button', 'link', 'click', 'open', 'play']);
+      const words = lower.split(/[^a-z0-9]+/).filter(w => w.length > 2 && !ignore.has(w));
+      
+      if (words.length > 0) {
+        const matched = words.filter(w => txt.includes(w));
+        if (matched.length === words.length) return 2;
+        if (matched.length > 0) return matched.length / words.length; // 0.1 to 0.9
+      }
       return 0;
     }
 
@@ -552,7 +564,12 @@ async function clickElement(elementText, elementType) {
 
     const target = sorted[0].el;
     target.focus();
-    target.click();
+    
+    // Simulate real mouse events for SPAs that listen to mousedown/mouseup instead of click
+    ['mousedown', 'mouseup', 'click'].forEach(evt => {
+      target.dispatchEvent(new MouseEvent(evt, { bubbles: true, cancelable: true, view: window }));
+    });
+    try { target.click(); } catch(e) {}
     return {
       success: true,
       clicked: (target.textContent || target.value || target.getAttribute('aria-label') || '').trim()
@@ -563,8 +580,13 @@ async function clickElement(elementText, elementType) {
 // ── DOM: Form filling ──────────────────────────────────────────────────────────
 
 async function fillFormField(fieldIdentifier, value) {
-  return runInTab(async (identifier, val) => {
+  const tab = await getActiveTab();
+  if (!tab) return { success: false, message: 'No active tab' };
+  const postConfig = getSelectors(tab.url, 'post') || {};
+
+  return runInTab(async (identifier, val, pConfig) => {
     const lower = identifier.toLowerCase().trim();
+    const isPostTarget = lower.includes('post') || lower.includes('content') || lower.includes('draft');
 
     function labelOf(el) {
       const byId = el.id ? document.querySelector(`label[for="${el.id}"]`) : null;
@@ -591,6 +613,7 @@ async function fillFormField(fieldIdentifier, value) {
     }
 
     function score(el) {
+      let s = 0;
       const combined = [
         labelOf(el),
         el.placeholder || '',
@@ -600,13 +623,23 @@ async function fillFormField(fieldIdentifier, value) {
         el.type || ''
       ].join(' ').toLowerCase();
 
-      if (combined === lower) return 4;
-      if (combined.startsWith(lower)) return 3;
-      if (combined.includes(lower)) return 2;
-      // special: "password" matches type="password"
-      if (lower === 'password' && el.type === 'password') return 4;
-      if (lower === 'email' && el.type === 'email') return 3;
-      return 0;
+      if (combined === lower) s = 4;
+      else if (combined.startsWith(lower)) s = 3;
+      else if (combined.includes(lower)) s = 2;
+      
+      if (lower === 'password' && el.type === 'password') s = Math.max(s, 4);
+      if (lower === 'email' && el.type === 'email') s = Math.max(s, 3);
+
+      if (isPostTarget && pConfig.editorSelectors) {
+        for (const sel of pConfig.editorSelectors) {
+          if (el.matches(sel)) {
+            s = Math.max(s, 5); // Highest priority for explicitly matched platform editors
+            break;
+          }
+        }
+      }
+
+      return s;
     }
 
     let ranked = [];
@@ -615,7 +648,17 @@ async function fillFormField(fieldIdentifier, value) {
         document,
         'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select, [contenteditable="true"]'
       );
-      ranked = inputs
+      // Explicitly add elements that match editor selectors if they aren't caught
+      if (isPostTarget && pConfig.editorSelectors) {
+         for (const sel of pConfig.editorSelectors) {
+            inputs.push(...deepQueryAll(document, sel));
+         }
+      }
+      
+      // Deduplicate
+      const uniqueInputs = Array.from(new Set(inputs));
+
+      ranked = uniqueInputs
         .map(el => ({ el, s: score(el) }))
         .filter(({ s }) => s > 0)
         .sort((a, b) => b.s - a.s);
@@ -634,8 +677,19 @@ async function fillFormField(fieldIdentifier, value) {
     const proto = target.tagName === 'TEXTAREA'
       ? window.HTMLTextAreaElement.prototype
       : window.HTMLInputElement.prototype;
+      
     if (target.getAttribute('contenteditable') === 'true' || target.contentEditable === 'true') {
-      target.innerText = val;
+      // For rich text editors (like Quill on LinkedIn), innerText breaks internal state.
+      // Use document.execCommand to simulate real typing.
+      if (val === '') {
+        target.innerHTML = '';
+      } else {
+        target.innerHTML = '';
+        document.execCommand('insertText', false, val);
+        if (target.innerText.trim() !== val.trim() && target.innerHTML === '') {
+           target.innerText = val; // fallback
+        }
+      }
       target.dispatchEvent(new Event('input',  { bubbles: true }));
       target.dispatchEvent(new Event('change', { bubbles: true }));
       return { success: true, field: identifier };
@@ -652,7 +706,7 @@ async function fillFormField(fieldIdentifier, value) {
     target.dispatchEvent(new Event('change', { bubbles: true }));
 
     return { success: true, field: identifier };
-  }, [fieldIdentifier, value]);
+  }, [fieldIdentifier, value, postConfig]);
 }
 
 async function clearField(fieldIdentifier) {
@@ -806,11 +860,13 @@ async function controlVideo(action, value) {
   });
 
   // Find the first frame that successfully found a video (or clicked a button)
+  let firstError = null;
   for (const res of results) {
-    if (res.result) return res.result;
+    if (res.result && res.result.success) return res.result;
+    if (res.result && !res.result.success && !firstError) firstError = res.result;
   }
 
-  return { success: false, message: 'No video element found on this page or inside iframes.' };
+  return firstError || { success: false, message: 'No video element found on this page or inside iframes.' };
 }
 
 // ── LMS: Video Transcript ──────────────────────────────────────────────────────

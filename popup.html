@@ -107,6 +107,17 @@
       border-color: rgba(99,102,241,0.4);
     }
 
+    @keyframes pulseSettings {
+      0% { box-shadow: 0 0 0 0 rgba(99,102,241, 0.4); transform: scale(1); }
+      70% { box-shadow: 0 0 0 6px rgba(99,102,241, 0); transform: scale(1.05); }
+      100% { box-shadow: 0 0 0 0 rgba(99,102,241, 0); transform: scale(1); }
+    }
+    .settings-btn.pulse {
+      animation: pulseSettings 1.5s infinite;
+      border-color: rgba(99,102,241, 0.8);
+      color: #a5b4fc;
+    }
+
     /* ── Radar / Voice visualizer ─────────────────────────────── */
     .voice-section {
       display: flex;
@@ -408,13 +419,15 @@
         <div class="title text-gradient" style="text-transform: uppercase;">TERNKONNECT</div>
         <div class="subtitle">LMS Voice Assistant</div>
       </div>
-      <button class="settings-btn" id="settingsToggle" title="Settings" aria-label="Open settings">⚙</button>
+      <div style="display: flex; gap: 8px;">
+        <button class="settings-btn" id="reloadExtensionBtn" title="Reload Extension" aria-label="Reload extension" style="font-size: 16px;">↻</button>
+        <button class="settings-btn" id="settingsToggle" title="Settings" aria-label="Open settings">⚙</button>
+      </div>
     </div>
 
-    <!-- ── Not linked yet (every session, free or paid, needs email + code) ── -->
     <div id="apiWarning" class="warning" style="display:none">
       <span class="warn-icon">⚠</span>
-      <div><strong>Account Required</strong><br>Open settings (⚙) above and enter your Email and Integration Code, then click Save. New accounts get 3 free 5-minute sessions on the Starter plan.</div>
+      <div><strong>Account Required</strong><br>Open settings (⚙) above and enter your Email and Integration Code, then click Save. New accounts get 3 free 5-minute sessions on the Starter plan.<br><a href="#" id="getIntegrationCodeLink" style="color: #6366f1; text-decoration: underline; margin-top: 4px; display: inline-block;">How to get an Integration Code</a></div>
     </div>
 
     <!-- ── Free sessions used up (shown when the Starter plan's 3-session cap is hit) ── -->

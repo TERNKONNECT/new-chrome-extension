@@ -2,14 +2,69 @@
 // videos inside iframes) — must stay fully self-contained.
 
 export function controlVideoScript(action, value, config) {
-  const video = document.querySelector('video');
+  config = config || {};
+  function deepQueryVideo(root) {
+    const found = Array.from(root.querySelectorAll('video'));
+    const allEls = root.querySelectorAll('*');
+    for (const el of allEls) {
+      if (el.shadowRoot) found.push(...deepQueryVideo(el.shadowRoot));
+    }
+    return found;
+  }
+  const videos = deepQueryVideo(document);
+  let video = null;
+  let maxArea = -1;
+  for (const v of videos) {
+    const rect = v.getBoundingClientRect();
+    const area = rect.width * rect.height;
+    if (area > maxArea) {
+      maxArea = area;
+      video = v;
+    }
+  }
+  if (!video && videos.length > 0) video = videos[0];
 
-  if (!video && action === 'play') {
-    const selector = (config.playOverlaySelectors || []).join(', ');
-    const btn = selector ? document.querySelector(selector) : null;
+  if (video) {
+    if (action === 'play' && !video.paused) return { success: true, action: 'play' };
+    if (action === 'pause' && video.paused) return { success: true, action: 'pause' };
+  }
+
+  // Try UI buttons first for SPA compatibility (Udemy, Coursera)
+  const actionToSelectors = {
+    'play': config.playOverlaySelectors || [],
+    'pause': config.pauseOverlaySelectors || config.playOverlaySelectors || [],
+    'toggle': (config.playOverlaySelectors || []).concat(config.pauseOverlaySelectors || []),
+    'forward': config.forwardOverlaySelectors || [],
+    'rewind': config.rewindOverlaySelectors || [],
+    'mute': config.muteOverlaySelectors || [],
+    'speed': config.speedOverlaySelectors || []
+  };
+
+  const selectors = actionToSelectors[action] || [];
+  for (const sel of selectors) {
+    const btn = document.querySelector(sel);
     if (btn) {
       btn.click();
-      return { success: true, action: 'play', note: 'Clicked play button overlay' };
+      return { success: true, action, note: 'Clicked UI button' };
+    }
+  }
+
+  // Fallback: Click the center of the video screen (only for play/pause/toggle)
+  if (video && (action === 'play' || action === 'pause' || action === 'toggle')) {
+    try {
+      const rect = video.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const topEl = document.elementFromPoint(x, y);
+      
+      if (topEl) {
+        topEl.click();
+      } else {
+        video.click();
+      }
+      return { success: true, action, note: 'Clicked video screen center' };
+    } catch (err) {
+      console.warn('Failed to click video center', err);
     }
   }
 

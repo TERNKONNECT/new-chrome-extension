@@ -47,6 +47,23 @@ async function getBackendUrls() {
   };
 }
 
+const getIntegrationCodeLink = document.getElementById('getIntegrationCodeLink');
+if (getIntegrationCodeLink) {
+  getIntegrationCodeLink.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const urls = await getBackendUrls();
+    const toolsUrl = urls.dashboardUrl ? urls.dashboardUrl.replace('/billing', '/tools') : 'http://localhost:3000/dashboard/tools';
+    chrome.tabs.create({ url: toolsUrl });
+  });
+}
+
+const reloadExtensionBtn = document.getElementById('reloadExtensionBtn');
+if (reloadExtensionBtn) {
+  reloadExtensionBtn.addEventListener('click', () => {
+    chrome.runtime.reload();
+  });
+}
+
 let autoOpenedSetup = false;
 
 // ── Settings panel toggle ─────────────────────────────────────
@@ -211,8 +228,8 @@ async function checkStatus() {
     micState = perm.state;
   } catch (_) {}
 
-  // Automatically open setup.html if permission is prompt (not yet asked)
-  if (micState === 'prompt' && !autoOpenedSetup) {
+  // Automatically open setup.html if permission is prompt (not yet asked) AND account is linked
+  if (micState === 'prompt' && !autoOpenedSetup && config && config.linked) {
     autoOpenedSetup = true;
     chrome.tabs.create({ url: 'setup.html' });
   }
@@ -222,6 +239,7 @@ async function checkStatus() {
   wakePhraseTip.style.display = 'none';
 
   if (!config) {
+    settingsToggle.classList.remove('pulse');
     warn.style.display = 'flex';
     trialExpiredView.style.display = 'none';
     setBadge(connBadge, 'Offline', 'red');
@@ -235,6 +253,7 @@ async function checkStatus() {
   // (not re-entering the same code) lifts this, since the cap lives on the
   // Subscription record server-side.
   if (config.trialExhausted) {
+    settingsToggle.classList.remove('pulse');
     warn.style.display = 'none';
     trialExpiredView.style.display = 'block';
     setBadge(connBadge, 'Upgrade Required', 'red');
@@ -257,6 +276,7 @@ async function checkStatus() {
   // Every session — free Starter-plan or paid — now requires a linked
   // email + integration code. There's no anonymous fallback.
   if (!config.linked) {
+    settingsToggle.classList.add('pulse');
     warn.style.display = 'flex';
     setBadge(connBadge, 'Not Linked', 'red');
     radarCore.className = 'radar-core error';
@@ -272,6 +292,8 @@ async function checkStatus() {
     }
     return;
   }
+
+  settingsToggle.classList.remove('pulse');
 
   // Resting state: not connected to Gemini, but actively listening for the
   // wake phrase — this is normal and expected, not an error, so it gets its
