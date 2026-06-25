@@ -38,5 +38,11 @@ export default {
   social: {
     feedPathHints: ['/feed'],
     profilePathHints: ['/in/']
+  },
+
+  post: {
+    openModalSelectors: ['button.share-box-feed-entry__trigger', '#share-to-linkedin'],
+    editorSelectors: ['.ql-editor[contenteditable="true"]', 'div[data-test-ql-editor-content]'],
+    submitSelectors: ['button.share-actions__primary-action', '.share-box_actions__send-icon', 'button[data-test-id="share-submit-button"]']
   }
 };

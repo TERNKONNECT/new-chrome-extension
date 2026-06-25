@@ -136,6 +136,11 @@ function startWakeWordListener() {
   recognizer.onerror = (event) => {
     // 'no-speech' fires routinely on silence; onend below restarts it regardless.
     console.warn('[TernKonnect] Wake word recognizer error:', event.error);
+    if (event.error === 'not-allowed') {
+      console.warn('[TernKonnect] Speech recognition blocked in this context. Waking immediately instead.');
+      stopWakeWordListener();
+      wakeUp();
+    }
   };
 
   recognizer.onend = () => {
