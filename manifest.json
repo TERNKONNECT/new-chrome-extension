@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "TernKonnect AI Assistant",
   "version": "1.0.0",
-  "description": "Voice-controlled AI browser assistant for blind users. Powered by Gemini AI.",
+  "description": "Voice-controlled AI browser assistant for blind users. Powered by TernKonnect",
   "permissions": [
     "activeTab",
     "scripting",

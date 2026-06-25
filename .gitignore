@@ -1,4 +1,5 @@
 .env
+config.generated.js
 node_modules/
 test_ws.js
 .DS_Store

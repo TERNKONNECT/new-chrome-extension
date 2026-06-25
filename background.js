@@ -87,13 +87,29 @@ async function ensureProfileId() {
   return { profileId, profileName, profileEmail };
 }
 
+// ── Backend URLs ──────────────────────────────────────────────────────────────
+// Single source of truth for where the two backends live, baked in from
+// .env at build time (run `npm run build:config` after changing .env, then
+// reload the extension) — not editable from the extension UI. Browser JS
+// has no filesystem access, so this generated file is the closest honest
+// equivalent of "read it from .env".
+
+import { PLATFORM_BASE_URL, INTELLIGENCE_WS_URL, DASHBOARD_URL } from './config.generated.js';
+
+async function getBackendUrls() {
+  return {
+    platformBaseUrl: PLATFORM_BASE_URL,
+    intelligenceWsUrl: INTELLIGENCE_WS_URL,
+    dashboardUrl: DASHBOARD_URL
+  };
+}
+
 // ── Intelligence backend session token ──────────────────────────────────────
 // digital-accessibility-intelligence gates its WebSocket on a short-lived JWT
 // minted by the Platform's /api/auth/session (reusing the same email +
 // integrationCode the user already entered for /chrome/integrate). Cached in
 // memory only — re-fetched from the Platform whenever it's near expiry.
 
-const PLATFORM_BASE_URL = 'http://localhost:9001';
 let cachedSessionToken = null;
 let cachedSessionExpiresAt = 0;
 
@@ -110,7 +126,8 @@ async function getChromeSessionToken({ forceRefresh = false } = {}) {
     throw new Error('No TernConnect account linked yet. Open settings and enter your email and integration code.');
   }
 
-  const response = await fetch(`${PLATFORM_BASE_URL}/api/auth/session`, {
+  const { platformBaseUrl } = await getBackendUrls();
+  const response = await fetch(`${platformBaseUrl}/api/auth/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, integrationCode })
@@ -137,7 +154,8 @@ async function trackCheckIn(eventType = 'checkin') {
     const chromeEmail = storage.chromeProfileEmail;
 
     if (code && profileId) {
-      await fetch('http://localhost:9001/api/platform/chrome/track', {
+      const { platformBaseUrl } = await getBackendUrls();
+      await fetch(`${platformBaseUrl}/api/platform/chrome/track`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -277,7 +295,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const { email, integrationCode } = message;
     ensureProfileId().then(async ({ profileId, profileName, profileEmail }) => {
       try {
-        const response = await fetch('http://localhost:9001/api/platform/chrome/integrate', {
+        const { platformBaseUrl } = await getBackendUrls();
+        const response = await fetch(`${platformBaseUrl}/api/platform/chrome/integrate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -310,11 +329,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === 'log_profile_activity') {
     const { actionType, description, metadata } = message;
-    chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId']).then((storage) => {
+    chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId']).then(async (storage) => {
       const code = storage.ternkonnectCode || storage.ternkonnectPin || 'inactive';
       const profileId = storage.chromeProfileId;
+      const { platformBaseUrl } = await getBackendUrls();
 
-      fetch('http://localhost:9001/api/platform/chrome/log-activity', {
+      fetch(`${platformBaseUrl}/api/platform/chrome/log-activity`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -335,6 +355,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     getChromeSessionToken({ forceRefresh: !!message.forceRefresh })
       .then(token => sendResponse({ token }))
       .catch(err => sendResponse({ error: err.message, trialExhausted: !!err.trialExhausted }));
+    return true;
+  }
+
+  if (message.type === 'get_backend_urls') {
+    getBackendUrls().then(sendResponse).catch(() => sendResponse({
+      platformBaseUrl: PLATFORM_BASE_URL,
+      intelligenceWsUrl: INTELLIGENCE_WS_URL,
+      dashboardUrl: DASHBOARD_URL
+    }));
     return true;
   }
 

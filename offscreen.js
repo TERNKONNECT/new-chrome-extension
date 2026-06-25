@@ -12,7 +12,16 @@ import { getTernkonnectAuth } from './config.js';
 // holds the system prompt + tool declarations server-side and gates the
 // connection on a Platform-issued JWT (see config.js / background.js). There
 // is no client-side system prompt or anonymous proxy path anymore.
-const INTELLIGENCE_WS_URL = 'ws://localhost:8000/ws';
+// The actual URL is owned by background.js (configurable via the popup's
+// Advanced settings) — fetched fresh on each connect rather than hardcoded
+// here, so changing deployments doesn't need a code edit.
+async function getIntelligenceWsUrl() {
+  try {
+    const urls = await chrome.runtime.sendMessage({ type: 'get_backend_urls' });
+    if (urls?.intelligenceWsUrl) return urls.intelligenceWsUrl;
+  } catch (_) {}
+  return 'ws://localhost:8000/ws';
+}
 
 // Forgiving match: STT often mis-hears "Tern" as "Turn", and may or may not
 // split "Konnect" into two words.
@@ -436,7 +445,7 @@ async function connectToGemini() {
   // trial-exhausted flag from a previous failed attempt.
   try { chrome.runtime.sendMessage({ type: 'set_session_state', state: { trialExhausted: false } }); } catch (_) {}
 
-  ws = new WebSocket(INTELLIGENCE_WS_URL);
+  ws = new WebSocket(await getIntelligenceWsUrl());
 
   ws.onopen = () => {
     isConnecting = false;

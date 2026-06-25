@@ -32,7 +32,20 @@ const upgradeBtn        = document.getElementById('upgradeBtn');
 const retryAfterUpgradeBtn = document.getElementById('retryAfterUpgradeBtn');
 const retryMsg          = document.getElementById('retryMsg');
 
-const PLATFORM_DASHBOARD_URL = 'http://localhost:3000/dashboard/billing';
+// Backend URLs are baked in from .env at build time (background.js's
+// get_backend_urls reads config.generated.js) — not editable from this UI.
+// Run `npm run build:config` after changing .env, then reload the extension.
+async function getBackendUrls() {
+  try {
+    const urls = await chrome.runtime.sendMessage({ type: 'get_backend_urls' });
+    if (urls) return urls;
+  } catch (_) {}
+  return {
+    platformBaseUrl: 'http://localhost:9001',
+    intelligenceWsUrl: 'ws://localhost:8000/ws',
+    dashboardUrl: 'http://localhost:3000/dashboard/billing'
+  };
+}
 
 let autoOpenedSetup = false;
 
@@ -143,8 +156,9 @@ clearKeyBtn.addEventListener('click', async () => {
 // the same email + integration code can't lift it — only an actual plan
 // upgrade on the web dashboard does.
 
-upgradeBtn.addEventListener('click', () => {
-  chrome.tabs.create({ url: PLATFORM_DASHBOARD_URL });
+upgradeBtn.addEventListener('click', async () => {
+  const { dashboardUrl } = await getBackendUrls();
+  chrome.tabs.create({ url: dashboardUrl });
 });
 
 // After upgrading on the dashboard, nothing automatically tells the

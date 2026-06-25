@@ -1,6 +1,7 @@
 {
   "scripts": {
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "build:config": "node build-config.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
