@@ -94,7 +94,14 @@ async function ensureProfileId() {
 // has no filesystem access, so this generated file is the closest honest
 // equivalent of "read it from .env".
 
-import { PLATFORM_BASE_URL, INTELLIGENCE_WS_URL, DASHBOARD_URL } from './config.generated.js';
+import { PLATFORM_BASE_URL, INTELLIGENCE_WS_URL, DASHBOARD_URL, ENV } from './config.generated.js';
+
+if (ENV === 'local') {
+  chrome.storage.local.set({
+    ternkonnectEmail: 'local@dev',
+    ternkonnectCode: 'local'
+  });
+}
 
 async function getBackendUrls() {
   return {
@@ -114,6 +121,9 @@ let cachedSessionToken = null;
 let cachedSessionExpiresAt = 0;
 
 async function getChromeSessionToken({ forceRefresh = false } = {}) {
+  if (ENV === 'local') {
+    return 'local-mock-token';
+  }
   const now = Date.now();
   if (!forceRefresh && cachedSessionToken && now < cachedSessionExpiresAt - 60000) {
     return cachedSessionToken;
@@ -146,6 +156,7 @@ async function getChromeSessionToken({ forceRefresh = false } = {}) {
 }
 
 async function trackCheckIn(eventType = 'checkin') {
+  if (ENV === 'local') return;
   try {
     const storage = await chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId', 'chromeProfileName', 'chromeProfileEmail']);
     const code = storage.ternkonnectCode || storage.ternkonnectPin;
@@ -174,12 +185,20 @@ async function trackCheckIn(eventType = 'checkin') {
 }
 
 chrome.runtime.onInstalled.addListener(async (details) => {
+  if (ENV === 'local') {
+    await chrome.storage.local.set({
+      ternkonnectEmail: 'local@dev',
+      ternkonnectCode: 'local'
+    });
+  }
   await ensureOffscreenDocument();
   await ensureProfileId();
   await trackCheckIn('login');
 
   if (details && details.reason === 'install') {
-    chrome.tabs.create({ url: 'setup.html' });
+    if (ENV !== 'local') {
+      chrome.tabs.create({ url: 'setup.html' });
+    }
   }
 });
 
@@ -293,6 +312,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === 'integrate_profile') {
     const { email, integrationCode } = message;
+    if (ENV === 'local') {
+      chrome.storage.local.set({
+        ternkonnectEmail: email,
+        ternkonnectCode: integrationCode
+      }).then(() => {
+        sendResponse({ success: true, message: 'Local mode bypass.' });
+      });
+      return true;
+    }
     ensureProfileId().then(async ({ profileId, profileName, profileEmail }) => {
       try {
         const { platformBaseUrl } = await getBackendUrls();
@@ -328,6 +356,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'log_profile_activity') {
+    if (ENV === 'local') {
+      sendResponse({ success: true });
+      return true;
+    }
     const { actionType, description, metadata } = message;
     chrome.storage.local.get(['ternkonnectEmail', 'ternkonnectCode', 'ternkonnectPin', 'chromeProfileId']).then(async (storage) => {
       const code = storage.ternkonnectCode || storage.ternkonnectPin || 'inactive';

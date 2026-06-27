@@ -25,7 +25,7 @@ async function getIntelligenceWsUrl() {
 
 // Forgiving match: STT often mis-hears "Tern" as "Turn", and may or may not
 // split "Konnect" into two words.
-const WAKE_PHRASE = /\bhey,?\s*t[ue]rn\s*-?\s*konnect\b/i;
+const WAKE_PHRASE = /\bhey\s*(?:t[ue]rn|term|ten)?\s*-?\s*[ck]onnect\b/i;
 // How long to stay connected after the conversation goes quiet before
 // proactively disconnecting — well under the server's own idle timeout,
 // specifically to avoid burning a capped session's minutes while idle.
@@ -49,6 +49,7 @@ let awake = false;
 let recognizer = null;
 let wakeIdleTimer = null;
 let lastWakeIdleResetAt = 0;
+let wakeWordAvailable = true; // false when SpeechRecognition API is missing
 
 // Audio playback queue (we queue chunks and play them sequentially)
 let playbackQueue = [];
@@ -113,6 +114,7 @@ function startWakeWordListener() {
   const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognitionImpl) {
     console.warn('[TernKonnect] SpeechRecognition unavailable in this context — wake word disabled, waking immediately instead.');
+    wakeWordAvailable = false;
     wakeUp();
     return;
   }
@@ -125,6 +127,7 @@ function startWakeWordListener() {
   recognizer.onresult = (event) => {
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const transcript = event.results[i][0]?.transcript || '';
+      console.log('[TernKonnect] STT heard:', transcript);
       if (WAKE_PHRASE.test(transcript)) {
         console.log('[TernKonnect] Wake phrase detected:', transcript.trim());
         wakeUp();
@@ -139,6 +142,7 @@ function startWakeWordListener() {
     if (event.error === 'not-allowed') {
       console.warn('[TernKonnect] Speech recognition blocked in this context. Waking immediately instead.');
       stopWakeWordListener();
+      wakeWordAvailable = false;
       wakeUp();
     }
   };
@@ -202,6 +206,9 @@ function goToSleep() {
 function resetWakeIdleTimer() {
   lastWakeIdleResetAt = Date.now();
   clearWakeIdleTimer();
+  // If there's no wake-word listener to fall back to, sleeping would just
+  // trigger an immediate re-connect loop — so stay connected instead.
+  if (!wakeWordAvailable) return;
   wakeIdleTimer = setTimeout(() => {
     console.log('[TernKonnect] Quiet for a while — going back to sleep to preserve session time.');
     goToSleep();
@@ -337,6 +344,15 @@ async function startMicrophone() {
       }
     });
 
+    // Diagnostic: log mic track info to help debug silent-audio issues
+    const track = micStream.getAudioTracks()[0];
+    console.log('[TernKonnect] Mic track:', track?.label, 'enabled:', track?.enabled, 'readyState:', track?.readyState, 'muted:', track?.muted);
+    if (track) {
+      track.onmute = () => console.warn('[TernKonnect] Mic track MUTED');
+      track.onunmute = () => console.log('[TernKonnect] Mic track UNMUTED');
+      track.onended = () => console.warn('[TernKonnect] Mic track ENDED');
+    }
+
     audioContext = new AudioContext({ sampleRate: 16000 });
     const ctx = audioContext; // capture this specific instance, not the mutable outer binding
     console.log('[TernKonnect] AudioContext state on creation:', ctx.state);
@@ -365,6 +381,7 @@ async function startMicrophone() {
     await ctx.audioWorklet.addModule('audio-processor.js');
     workletNode = new AudioWorkletNode(ctx, 'audio-processor');
 
+    let diagFrameCount = 0;
     workletNode.port.onmessage = (event) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       // Half-duplex: don't stream the mic into Gemini while TTS is playing.
@@ -375,6 +392,15 @@ async function startMicrophone() {
       // reset a timer on every call.
       if (Date.now() - lastWakeIdleResetAt > 2000) resetWakeIdleTimer();
       const float32 = event.data;
+
+      // Diagnostic: log max sample amplitude every ~2s to verify real audio
+      diagFrameCount++;
+      if (diagFrameCount % 62 === 0) {
+        let maxVal = 0;
+        for (let i = 0; i < float32.length; i++) maxVal = Math.max(maxVal, Math.abs(float32[i]));
+        console.log('[TernKonnect] Mic audio check — max amplitude:', maxVal.toFixed(6), maxVal > 0.001 ? '(AUDIO OK)' : '(SILENCE)');
+      }
+
       const int16 = float32ToInt16(float32);
       const b64 = bufferToBase64(int16.buffer);
       ws.send(JSON.stringify({
@@ -570,6 +596,9 @@ function playFeedbackSound(name) {
   if (!tone) return;
   try {
     const ctx = new AudioContext();
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.frequency.value = tone.freq;
@@ -762,6 +791,9 @@ async function playPCMChunk(base64Data, mimeType) {
     // Use a shared or new AudioContext for playback
     if (!playbackCtx || playbackCtx.state === 'closed') {
       playbackCtx = new AudioContext({ sampleRate });
+    }
+    if (playbackCtx.state === 'suspended') {
+      await playbackCtx.resume();
     }
 
     const buffer = playbackCtx.createBuffer(1, float32.length, sampleRate);
