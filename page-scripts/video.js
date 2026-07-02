@@ -29,7 +29,18 @@ export function controlVideoScript(action, value, config) {
     if (action === 'pause' && video.paused) return { success: true, action: 'pause' };
   }
 
+  let videoRect = null;
+  if (video) {
+      const rect = video.getBoundingClientRect();
+      videoRect = {
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2)
+      };
+  }
+
   // Try UI buttons first for SPA compatibility (Udemy, Coursera)
+  // We no longer call .click() on these because it fails as an untrusted event on modern LMS.
+  // Instead, if we find a specific button, we can return its coordinates for the debugger.
   const actionToSelectors = {
     'play': config.playOverlaySelectors || [],
     'pause': config.pauseOverlaySelectors || config.playOverlaySelectors || [],
@@ -44,27 +55,12 @@ export function controlVideoScript(action, value, config) {
   for (const sel of selectors) {
     const btn = document.querySelector(sel);
     if (btn) {
-      btn.click();
-      return { success: true, action, note: 'Clicked UI button' };
-    }
-  }
-
-  // Fallback: Click the center of the video screen (only for play/pause/toggle)
-  if (video && (action === 'play' || action === 'pause' || action === 'toggle')) {
-    try {
-      const rect = video.getBoundingClientRect();
-      const x = rect.left + rect.width / 2;
-      const y = rect.top + rect.height / 2;
-      const topEl = document.elementFromPoint(x, y);
-      
-      if (topEl) {
-        topEl.click();
-      } else {
-        video.click();
-      }
-      return { success: true, action, note: 'Clicked video screen center' };
-    } catch (err) {
-      console.warn('Failed to click video center', err);
+      const rect = btn.getBoundingClientRect();
+      videoRect = {
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2)
+      };
+      break; // Found the button, we'll let the debugger click/focus it
     }
   }
 
@@ -110,9 +106,10 @@ export function controlVideoScript(action, value, config) {
         };
       }
       default:
-        return { success: false, message: `Unknown video action: ${action}` };
+        return { success: false, message: `Unknown video action: ${action}`, rect: videoRect };
     }
   } catch (err) {
-    return { success: false, message: err.message };
+    // If HTML5 API fails (e.g. cross-origin restriction or not allowed), return rect so debugger can take over
+    return { success: false, message: err.message, rect: videoRect };
   }
 }

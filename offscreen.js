@@ -482,7 +482,7 @@ async function connectToGemini() {
     isConnecting = false;
     updateWsStatus('connected');
     console.log('[TernKonnect] Connected to Intelligence backend');
-    ws.send(JSON.stringify({ type: 'auth', token: sessionToken }));
+    ws.send(JSON.stringify({ type: 'auth', token: sessionToken, client_type: 'chrome_extension' }));
     scheduleTokenRefresh();
   };
 
@@ -626,7 +626,11 @@ function scheduleTokenRefresh() {
     try {
       const resp = await chrome.runtime.sendMessage({ type: 'get_chrome_session_token', forceRefresh: true });
       if (resp?.token && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'reauth', token: resp.token }));
+        ws.send(JSON.stringify({
+        type: 'reauth',
+        token: resp.token,
+        client_type: 'chrome_extension'
+      }));
         scheduleTokenRefresh();
       }
     } catch (err) {

@@ -891,11 +891,69 @@ async function controlVideo(action, value) {
     args: [action, value, config]
   });
 
-  // Find the first frame that successfully found a video (or clicked a button)
   let firstError = null;
+  let videoRect = null;
+  
   for (const res of results) {
-    if (res.result && res.result.success) return res.result;
+    if (res.result && res.result.success) {
+        // If the script explicitly says it succeeded via HTML5 API, great.
+        // But if it just tried a DOM click, we might want to still do CDP.
+        // For now, let's assume if it returns success, we accept it.
+        // We will modify video.js to return {success: false, rect: ...} for DOM clicks
+        // so we can fallback to CDP.
+        if (res.result.action) {
+            return res.result;
+        }
+    }
+    if (res.result && res.result.rect) {
+        videoRect = res.result.rect; // Capture coordinates for CDP
+    }
     if (res.result && !res.result.success && !firstError) firstError = res.result;
+  }
+
+  // If HTML5 API didn't work (or we specifically need to dispatch a trusted click/key)
+  // we fallback to chrome.debugger.
+  if (videoRect || action === 'play' || action === 'pause' || action === 'toggle' || action === 'forward' || action === 'rewind') {
+      try {
+          const target = { tabId: tab.id };
+          await chrome.debugger.attach(target, "1.3");
+          
+          try {
+              // 1. Focus the video by clicking its center (if we found it)
+              if (videoRect) {
+                  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+                      type: "mousePressed", x: videoRect.x, y: videoRect.y, button: "left", clickCount: 1
+                  });
+                  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+                      type: "mouseReleased", x: videoRect.x, y: videoRect.y, button: "left", clickCount: 1
+                  });
+              }
+
+              // 2. Dispatch the appropriate keystroke
+              let key = "";
+              if (['play', 'pause', 'toggle'].includes(action)) key = " "; // Spacebar
+              if (action === 'forward') key = "ArrowRight";
+              if (action === 'rewind') key = "ArrowLeft";
+              if (action === 'mute') key = "m";
+
+              if (key) {
+                  // Some players need keyDown/keyUp, some need rawKeyDown. We send both.
+                  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+                      type: "rawKeyDown", key: key, windowsVirtualKeyCode: key === " " ? 32 : (key === "ArrowRight" ? 39 : (key === "ArrowLeft" ? 37 : 77))
+                  });
+                  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+                      type: "keyUp", key: key
+                  });
+                  return { success: true, action: action, note: "Executed via debugger trusted event" };
+              }
+          } finally {
+              // Always detach immediately (Transient Attach)
+              await chrome.debugger.detach(target);
+          }
+      } catch (err) {
+          console.warn("[TernKonnect] Debugger fallback failed:", err);
+          return { success: false, message: `Video control failed: ${err.message}` };
+      }
   }
 
   return firstError || { success: false, message: 'No video element found on this page or inside iframes.' };

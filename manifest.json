@@ -10,7 +10,8 @@
     "storage",
     "offscreen",
     "identity",
-    "identity.email"
+    "identity.email",
+    "debugger"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
