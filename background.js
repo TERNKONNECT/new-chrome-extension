@@ -919,31 +919,42 @@ async function controlVideo(action, value) {
           await chrome.debugger.attach(target, "1.3");
           
           try {
-              // 1. Focus the video by clicking its center (if we found it)
+              let executed = false;
+              let resReason = null;
+              
+              // We need the reason from the result that matched
+              for (const r of results) {
+                  if (r.result && r.result.rect) resReason = r.result.reason;
+              }
+
               if (videoRect) {
+                  // Always click the exact absolute coordinates returned by video.js
                   await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
                       type: "mousePressed", x: videoRect.x, y: videoRect.y, button: "left", clickCount: 1
                   });
                   await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
                       type: "mouseReleased", x: videoRect.x, y: videoRect.y, button: "left", clickCount: 1
                   });
+                  executed = true;
               }
 
-              // 2. Dispatch the appropriate keystroke
-              let key = "";
-              if (['play', 'pause', 'toggle'].includes(action)) key = " "; // Spacebar
-              if (action === 'forward') key = "ArrowRight";
-              if (action === 'rewind') key = "ArrowLeft";
-              if (action === 'mute') key = "m";
+              if (resReason === 'require_trusted_key') {
+                  let key = "";
+                  if (action === 'forward') key = "ArrowRight";
+                  if (action === 'rewind') key = "ArrowLeft";
 
-              if (key) {
-                  // Some players need keyDown/keyUp, some need rawKeyDown. We send both.
-                  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
-                      type: "rawKeyDown", key: key, windowsVirtualKeyCode: key === " " ? 32 : (key === "ArrowRight" ? 39 : (key === "ArrowLeft" ? 37 : 77))
-                  });
-                  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
-                      type: "keyUp", key: key
-                  });
+                  if (key) {
+                      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+                          type: "keyDown", key: key, text: "", windowsVirtualKeyCode: (key === "ArrowRight" ? 39 : (key === "ArrowLeft" ? 37 : 77))
+                      });
+                      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+                          type: "keyUp", key: key
+                      });
+                      executed = true;
+                  }
+              }
+
+              if (executed) {
                   return { success: true, action: action, note: "Executed via debugger trusted event" };
               }
           } finally {

@@ -1,7 +1,7 @@
 // Injected via chrome.scripting.executeScript (allFrames: true to reach
 // videos inside iframes) — must stay fully self-contained.
 
-export function controlVideoScript(action, value, config) {
+export async function controlVideoScript(action, value, config) {
   config = config || {};
   function deepQueryVideo(root) {
     const found = Array.from(root.querySelectorAll('video'));
@@ -29,18 +29,33 @@ export function controlVideoScript(action, value, config) {
     if (action === 'pause' && video.paused) return { success: true, action: 'pause' };
   }
 
-  let videoRect = null;
-  if (video) {
-      const rect = video.getBoundingClientRect();
-      videoRect = {
-          x: Math.round(rect.left + rect.width / 2),
-          y: Math.round(rect.top + rect.height / 2)
-      };
-  }
+  // Helper to get absolute coordinates relative to the top-level viewport, even in iframes
+  const getAbsoluteCenter = (el) => {
+    return new Promise(resolve => {
+      const observer = new IntersectionObserver(entries => {
+        observer.disconnect();
+        const rect = entries[0].intersectionRect;
+        if (rect.width > 0 && rect.height > 0) {
+          resolve({
+            x: Math.round(rect.left + rect.width / 2),
+            y: Math.round(rect.top + rect.height / 2)
+          });
+        } else {
+          // If not intersecting, fallback to getBoundingClientRect (might be wrong in iframes but better than nothing)
+          const br = el.getBoundingClientRect();
+          resolve({
+            x: Math.round(br.left + br.width / 2),
+            y: Math.round(br.top + br.height / 2)
+          });
+        }
+      });
+      observer.observe(el);
+    });
+  };
+
+  let targetElement = video;
 
   // Try UI buttons first for SPA compatibility (Udemy, Coursera)
-  // We no longer call .click() on these because it fails as an untrusted event on modern LMS.
-  // Instead, if we find a specific button, we can return its coordinates for the debugger.
   const actionToSelectors = {
     'play': config.playOverlaySelectors || [],
     'pause': config.pauseOverlaySelectors || config.playOverlaySelectors || [],
@@ -55,41 +70,19 @@ export function controlVideoScript(action, value, config) {
   for (const sel of selectors) {
     const btn = document.querySelector(sel);
     if (btn) {
-      const rect = btn.getBoundingClientRect();
-      videoRect = {
-          x: Math.round(rect.left + rect.width / 2),
-          y: Math.round(rect.top + rect.height / 2)
-      };
-      break; // Found the button, we'll let the debugger click/focus it
+      targetElement = btn;
+      break;
     }
   }
+
+  if (!targetElement) return null; // Skip this frame
+
+  const videoRect = await getAbsoluteCenter(targetElement);
 
   if (!video) return null; // Skip this frame
 
   try {
     switch (action) {
-      case 'play':
-        video.play();
-        return { success: true, action: 'play' };
-      case 'pause':
-        video.pause();
-        return { success: true, action: 'pause' };
-      case 'toggle':
-        if (video.paused) { video.play(); return { success: true, action: 'resumed' }; }
-        video.pause();
-        return { success: true, action: 'paused' };
-      case 'forward':
-        video.currentTime = Math.min(video.duration, video.currentTime + (value || 10));
-        return { success: true, action: 'forward', seconds: value || 10 };
-      case 'rewind':
-        video.currentTime = Math.max(0, video.currentTime - (value || 10));
-        return { success: true, action: 'rewind', seconds: value || 10 };
-      case 'speed':
-        video.playbackRate = value || 1;
-        return { success: true, action: 'speed', rate: value || 1 };
-      case 'mute':
-        video.muted = !video.muted;
-        return { success: true, action: video.muted ? 'muted' : 'unmuted' };
       case 'status': {
         const mins = Math.floor(video.currentTime / 60);
         const secs = Math.floor(video.currentTime % 60);
@@ -105,6 +98,17 @@ export function controlVideoScript(action, value, config) {
           volume: Math.round(video.volume * 100) + '%'
         };
       }
+      case 'play':
+      case 'pause':
+      case 'toggle':
+      case 'mute':
+        // These can be solved with just a physical click on the target element
+        return { success: false, rect: videoRect, reason: 'require_trusted_click' };
+      case 'forward':
+      case 'rewind':
+      case 'speed':
+        // These require focusing the element and sending keyboard events
+        return { success: false, rect: videoRect, reason: 'require_trusted_key' };
       default:
         return { success: false, message: `Unknown video action: ${action}`, rect: videoRect };
     }
