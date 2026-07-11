@@ -25,7 +25,7 @@ async function getIntelligenceWsUrl() {
 
 // Forgiving match: STT often mis-hears "Tern" as "Turn", and may or may not
 // split "Konnect" into two words.
-const WAKE_PHRASE = /\bhey\s*(?:t[ue]rn|term|ten)?\s*-?\s*[ck]onnect\b/i;
+const WAKE_PHRASE = /(?:hey|hi|hello|connect|konnect)/i;
 // How long to stay connected after the conversation goes quiet before
 // proactively disconnecting — well under the server's own idle timeout,
 // specifically to avoid burning a capped session's minutes while idle.
