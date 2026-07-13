@@ -198,6 +198,21 @@ retryAfterUpgradeBtn.addEventListener('click', async () => {
   }, 2500);
 });
 
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === 'ws_status_changed' || msg.type === 'mic_status_changed') {
+    // If we're on the setup screen and suddenly get connected, refresh state
+    if (document.getElementById('setup-container')?.classList.contains('hidden') === false) {
+      if (msg.status === 'connected') checkStatus();
+    }
+    return;
+  }
+  
+  if (msg.type === 'profile_revoked') {
+    // Profile was removed via dashboard. Reset popup to setup screen.
+    checkStatus();
+  }
+});
+
 function showMsg(text, isError) {
   settingsMsg.textContent = text;
   settingsMsg.className = 'settings-msg' + (isError ? ' error' : '');
@@ -377,6 +392,18 @@ function setBadge(el, text, color) {
 }
 
 async function requestMicPermission() {
+  if (micState === 'granted') {
+    // If we already have permission, clicking the mic/radar should toggle the assistant
+    try {
+      if (config && config.wsStatus === 'dormant') {
+        chrome.runtime.sendMessage({ type: 'trigger_wakeup' });
+      } else if (config && (config.wsStatus === 'connected' || config.wsStatus === 'connecting')) {
+        chrome.runtime.sendMessage({ type: 'trigger_sleep' });
+      }
+    } catch (_) {}
+    return;
+  }
+  
   // Opening setup.html in a tab prevents Chrome from dismissing the permission prompt
   // when the extension popup loses focus.
   chrome.tabs.create({ url: 'setup.html' });
@@ -392,3 +419,8 @@ radarCore.addEventListener('click', requestMicPermission);
 
 // Re-check periodically in case the service worker or permissions update
 setInterval(checkStatus, 4000);
+
+// Ensure offscreen document audio context is unlocked by forwarding a user gesture
+document.addEventListener('click', () => {
+  try { chrome.runtime.sendMessage({ type: 'unlock_audio_autoplay' }); } catch (_) {}
+});

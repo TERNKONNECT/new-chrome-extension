@@ -64,10 +64,7 @@ function stopMicrophone() {
     try { workletNode.disconnect(); } catch (_) {}
     workletNode = null;
   }
-  if (audioContext) {
-    try { audioContext.close(); } catch (_) {}
-    audioContext = null;
-  }
+  // DO NOT close audioContext here; keep it unlocked for reuse
   if (micStream) {
     try {
       micStream.getTracks().forEach(track => track.stop());
@@ -139,8 +136,8 @@ function startWakeWordListener() {
   recognizer.onerror = (event) => {
     // 'no-speech' fires routinely on silence; onend below restarts it regardless.
     console.warn('[TernKonnect] Wake word recognizer error:', event.error);
-    if (event.error === 'not-allowed') {
-      console.warn('[TernKonnect] Speech recognition blocked in this context. Waking immediately instead.');
+    if (event.error === 'not-allowed' || event.error === 'network' || event.error === 'audio-capture') {
+      console.warn(`[TernKonnect] Speech recognition blocked or failed (${event.error}). Waking immediately instead.`);
       stopWakeWordListener();
       wakeWordAvailable = false;
       wakeUp();
@@ -227,6 +224,37 @@ boot();
 
 // Listen for messages from popup or background service worker
 chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === 'unlock_audio_autoplay') {
+    if (!audioContext) audioContext = new AudioContext({ sampleRate: 16000 });
+    if (!playbackCtx) playbackCtx = new AudioContext({ sampleRate: 24000 });
+    
+    if (audioContext.state === 'suspended') {
+      audioContext.resume().catch(e => console.error('[TernKonnect] Failed to resume audioContext on unlock:', e));
+    }
+    if (playbackCtx.state === 'suspended') {
+      playbackCtx.resume().catch(e => console.error('[TernKonnect] Failed to resume playbackCtx on unlock:', e));
+    }
+    console.log('[TernKonnect] AudioContexts explicitly unlocked via user gesture.');
+    return;
+  }
+
+  if (message.type === 'mic_permission_granted') {
+    console.log('[TernKonnect] Microphone permission granted! Restarting wake word listener...');
+    wakeWordAvailable = true;
+    startWakeWordListener();
+    return;
+  }
+
+  if (message.type === 'trigger_wakeup') {
+    wakeUp();
+    return;
+  }
+
+  if (message.type === 'trigger_sleep') {
+    goToSleep();
+    return;
+  }
+
   if (message.type === 'restart_offscreen') {
     console.log('[TernKonnect] Config reload requested — restarting connection...');
     hasWelcomed = false;
@@ -353,7 +381,9 @@ async function startMicrophone() {
       track.onended = () => console.warn('[TernKonnect] Mic track ENDED');
     }
 
-    audioContext = new AudioContext({ sampleRate: 16000 });
+    if (!audioContext) {
+      audioContext = new AudioContext({ sampleRate: 16000 });
+    }
     const ctx = audioContext; // capture this specific instance, not the mutable outer binding
     console.log('[TernKonnect] AudioContext state on creation:', ctx.state);
 
@@ -514,6 +544,17 @@ function handleWsClose(event) {
   isConnecting = false;
   ws = null;
   clearTokenRefreshTimer();
+  
+  // 1008 Policy Violation (Access Revoked)
+  if (event.code === 1008) {
+    console.error('[TernKonnect] Access revoked by server. Clearing profile.');
+    chrome.storage.local.remove(['ternkonnect_email', 'ternkonnect_integrationCode'], () => {
+      // notify popup to reset
+      try { chrome.runtime.sendMessage({ type: 'profile_revoked' }); } catch (_) {}
+    });
+    hasWelcomed = false; // require new welcome if they log in again
+  }
+  
   if (suppressNextReconnect) {
     // Whoever closed us (goToSleep, restart_offscreen) is already handling
     // the transition — don't fight over status or double-start the wake
@@ -521,8 +562,19 @@ function handleWsClose(event) {
     suppressNextReconnect = false;
     return;
   }
+  
   updateWsStatus('disconnected');
-  goToSleep();
+  
+  if (event.code === 1008) {
+    // If revoked, stay asleep and don't try to reconnect or listen for wake words.
+    awake = false;
+    clearWakeIdleTimer();
+    stopMicrophone();
+    stopWakeWordListener();
+    wakeWordAvailable = false;
+  } else {
+    goToSleep();
+  }
 }
 
 function handleWsError(err) {

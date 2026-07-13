@@ -28,9 +28,9 @@ async function requestPermission() {
     statusBadge.className = 'status-badge green';
     instruction.textContent = 'TernKonnect now has microphone access. You can close this tab and open the extension popup.';
 
-    // Notify background/offscreen to reload configuration and connect
+    // Notify offscreen to restart the wake word listener now that permission is granted
     try {
-      chrome.runtime.sendMessage({ type: 'reload_config' });
+      chrome.runtime.sendMessage({ type: 'mic_permission_granted' });
     } catch (_) {}
 
     // Close the tab after a brief delay
@@ -49,3 +49,8 @@ startBtn.addEventListener('click', requestPermission);
 
 // Check if already authorized when the page opens
 checkPermissionOnLoad();
+
+// Ensure offscreen document audio context is unlocked by forwarding a user gesture
+document.addEventListener('click', () => {
+  try { chrome.runtime.sendMessage({ type: 'unlock_audio_autoplay' }); } catch (_) {}
+});
